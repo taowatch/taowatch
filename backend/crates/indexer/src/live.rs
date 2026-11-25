@@ -27,7 +27,7 @@ pub async fn run(pool: PgPool, url: String) -> Result<()> {
 }
 
 async fn follow(pool: &PgPool, url: &str, last_block: &mut u32) -> Result<()> {
-    info!(%url, "connecting to live node");
+    info!(url = %crate::redact(url), "connecting to live node");
     let chain = Chain::connect(url).await?;
 
     // Poll the finalized head instead of relying on a block subscription: on the public

@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         Some("run") => {
             let cfg = Config::from_env()?;
             let pool = db::connect(&cfg.database_url).await?;
-            info!(live = %cfg.subtensor_ws, archive = %cfg.subtensor_archive_ws, workers = cfg.backfill_workers, "indexer starting");
+            info!(live = %redact(&cfg.subtensor_ws), archive = %redact(&cfg.subtensor_archive_ws), workers = cfg.backfill_workers, "indexer starting");
             tokio::try_join!(
                 live::run(pool.clone(), cfg.subtensor_ws.clone()),
                 backfill::run(pool.clone(), cfg.subtensor_archive_ws.clone(), cfg.backfill_workers),
@@ -127,4 +127,27 @@ fn print_snapshot(s: &WalletSnapshot) {
     }
     let claimed: u128 = s.claimed_rao.iter().map(|(_, v)| *v as u128).sum();
     println!("claimed    {} τ all-time", rao_to_tao(claimed));
+}
+
+/// Hide credentials in an RPC URL (`?apikey=…`, `user:pass@`) before logging it.
+fn redact(url: &str) -> String {
+    let base = url.split_once('?').map_or(url, |(b, _)| b);
+    let base = match base.split_once("://") {
+        Some((scheme, rest)) => match rest.split_once('@') {
+            Some((_, host)) => format!("{scheme}://***@{host}"),
+            None => base.to_owned(),
+        },
+        None => base.to_owned(),
+    };
+    if url.contains('?') { format!("{base}?***") } else { base }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn redacts_keys() {
+        assert_eq!(super::redact("wss://x.io/ws?apikey=secret"), "wss://x.io/ws?***");
+        assert_eq!(super::redact("wss://u:p@x.io:443"), "wss://***@x.io:443");
+        assert_eq!(super::redact("wss://x.io:443"), "wss://x.io:443");
+    }
 }

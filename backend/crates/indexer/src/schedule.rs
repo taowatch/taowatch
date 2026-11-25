@@ -26,7 +26,8 @@ impl Plan {
     }
 }
 
-/// "Days back from head" to sample, oldest first, deduplicated. Day 0 = head.
+/// "Days back from head" to sample, newest first (recent history shows up first, and the
+/// walk back can stop at dTAO), deduplicated. Day 0 = head.
 pub fn plan_days(plan: Plan) -> Vec<u32> {
     let mut days: Vec<u32> = match plan {
         Plan::None => vec![],
@@ -38,7 +39,7 @@ pub fn plan_days(plan: Plan) -> Vec<u32> {
             d
         }
     };
-    days.sort_unstable_by(|a, b| b.cmp(a));
+    days.sort_unstable();
     days.dedup();
     days
 }
@@ -130,6 +131,13 @@ pub fn is_transient(err: &str) -> bool {
 }
 
 /// Exponential backoff in seconds, capped at 60 s.
+/// A request the node could not finish in time (slow historical runtime call): retrying
+/// a few times is fine, forever is not.
+pub fn is_timeout(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("timeout") || e.contains("timed out")
+}
+
 pub fn backoff_secs(attempt: u32) -> u64 {
     (2u64 << attempt.min(5)).min(60)
 }
@@ -139,11 +147,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_recommended_is_daily_then_weekly_oldest_first() {
+    fn plan_recommended_is_daily_then_weekly_newest_first() {
         let d = plan_days(Plan::Recommended { max_days: 660 });
-        assert_eq!(d.first(), Some(&659)); // 127, 134, … , 659 weekly
-        assert_eq!(d.last(), Some(&0));
-        assert!(d.windows(2).all(|w| w[0] > w[1]));
+        assert_eq!(d.first(), Some(&0));
+        assert_eq!(d.last(), Some(&659)); // 127, 134, … , 659 weekly
+        assert!(d.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(d.iter().filter(|&&x| x <= 120).count(), 121);
         assert_eq!(d.iter().filter(|&&x| x > 120).count(), 77);
     }

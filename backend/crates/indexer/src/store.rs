@@ -287,11 +287,17 @@ pub struct Job {
     pub plan: String,
 }
 
-/// Claim the next queued (or interrupted) job.
+/// Jobs left `running` by a previous indexer process were interrupted: queue them again.
+/// Call once at startup, before any worker takes a job (only one indexer runs at a time).
+pub async fn requeue_interrupted(pool: &PgPool) -> Result<u64> {
+    Ok(sqlx::query("UPDATE backfill_jobs SET status = 'queued' WHERE status = 'running'").execute(pool).await?.rows_affected())
+}
+
+/// Claim the next queued job. A `running` job belongs to a worker and is never handed out twice.
 pub async fn next_job(pool: &PgPool) -> Result<Option<Job>> {
     let row: Option<(String, String)> = sqlx::query_as(
         "UPDATE backfill_jobs SET status = 'running', updated_at = now()
-         WHERE address = (SELECT address FROM backfill_jobs WHERE status IN ('queued', 'running')
+         WHERE address = (SELECT address FROM backfill_jobs WHERE status = 'queued'
                           ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED)
          RETURNING address, plan",
     )

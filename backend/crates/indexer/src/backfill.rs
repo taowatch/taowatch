@@ -1,4 +1,4 @@
-//! History backfill from the archive node (rate-limited: keep workers at 1–2).
+//! History backfill from the archive node. Each worker handles one wallet at a time.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -10,16 +10,25 @@ use taowatch_core::chain::{self, Chain, SnapshotError, WalletSnapshot};
 use tokio::sync::OnceCell;
 use tracing::{info, warn};
 
-use crate::schedule::{BLOCKS_PER_DAY, CumPoint, Plan, backoff_secs, block_for_day, change_windows, is_transient, plan_days};
+use crate::schedule::{BLOCKS_PER_DAY, CumPoint, Plan, backoff_secs, block_for_day, change_windows, is_timeout, is_transient, plan_days};
 use crate::store;
 
 /// History older than dTAO has a different stake layout; ~660 days covers it as of 2026-11.
 const MAX_DAYS: u32 = 700;
 const MAX_ATTEMPTS: u32 = 40;
+/// A point whose calls keep timing out is skipped after this many tries.
+const MAX_TIMEOUTS: u32 = 3;
+/// Stop walking back after this many points in a row were skipped (very old state is too
+/// slow to read on this archive).
+const MAX_SKIPPED_IN_A_ROW: u32 = 3;
 /// Pause between archive points to stay under the archive's rate limit.
 const PAUSE: Duration = Duration::from_millis(800);
 
 pub async fn run(pool: PgPool, archive_url: String, workers: usize) -> Result<()> {
+    let requeued = store::requeue_interrupted(&pool).await?;
+    if requeued > 0 {
+        info!(n = requeued, "resuming interrupted backfill jobs");
+    }
     let chain = std::sync::Arc::new(OnceCell::<Chain>::new());
     let mut set = tokio::task::JoinSet::new();
     for w in 0..workers.max(1) {
@@ -66,11 +75,18 @@ pub async fn run(pool: PgPool, archive_url: String, workers: usize) -> Result<()
 
 /// Retry transient archive errors with backoff; `Ok(None)` = pre-dTAO block.
 async fn snapshot_with_retry(chain: &Chain, block: u32, key: &chain::AccountId32) -> Result<Option<WalletSnapshot>> {
+    let mut timeouts = 0;
     for attempt in 0..MAX_ATTEMPTS {
         match chain.snapshot_at(block, key).await {
             Ok(s) => return Ok(Some(s)),
             Err(SnapshotError::PreDtao) => return Ok(None),
             Err(SnapshotError::Other(e)) if is_transient(&format!("{e:#}")) => {
+                if is_timeout(&format!("{e:#}")) {
+                    timeouts += 1;
+                    if timeouts >= MAX_TIMEOUTS {
+                        anyhow::bail!("block {block}: node timed out {timeouts} times: {e:#}");
+                    }
+                }
                 let wait = backoff_secs(attempt);
                 warn!(block, attempt, wait, error = %e, "archive busy, backing off");
                 tokio::time::sleep(Duration::from_secs(wait)).await;
@@ -91,6 +107,7 @@ async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
     let half_day = (BLOCKS_PER_DAY / 2) as i64;
 
     let mut done = 0;
+    let mut skipped_in_a_row = 0;
     for d in days {
         done += 1;
         let Some(block) = block_for_day(head, d) else { continue };
@@ -99,9 +116,25 @@ async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
             continue;
         }
         match snapshot_with_retry(chain, block, &key).await {
-            Ok(Some(s)) => store::insert_snapshot(pool, &job.address, "backfill", &s).await?,
-            Ok(None) => info!(address = %job.address, days_back = d, "before dTAO, skipped"),
-            Err(e) => warn!(address = %job.address, days_back = d, error = %e, "point skipped"),
+            Ok(Some(s)) => {
+                store::insert_snapshot(pool, &job.address, "backfill", &s).await?;
+                skipped_in_a_row = 0;
+            }
+            Ok(None) => {
+                // Points are newest first: everything older is before dTAO as well.
+                info!(address = %job.address, days_back = d, "reached dTAO launch, history complete");
+                store::job_progress(pool, &job.address, total, total).await?;
+                break;
+            }
+            Err(e) => {
+                warn!(address = %job.address, days_back = d, error = %format!("{e:#}"), "point skipped");
+                skipped_in_a_row += 1;
+                if skipped_in_a_row >= MAX_SKIPPED_IN_A_ROW {
+                    warn!(address = %job.address, days_back = d, "older history is unreadable on this archive, stopping here");
+                    store::job_progress(pool, &job.address, total, total).await?;
+                    break;
+                }
+            }
         }
         store::job_progress(pool, &job.address, done, total).await?;
         tokio::time::sleep(PAUSE).await;
