@@ -12,18 +12,20 @@ web/       React 19 + Vite 8 + TypeScript 7 + Chart.js · Caddyfile · Dockerfil
 
 ## Deploy
 
-Needs Docker with Compose v2, a domain pointing to the server, and ports 80/443 open (Caddy obtains the certificate).
-Only `docker-compose.yml` and `.env` are needed on the server; the images are pulled from GitHub Container Registry.
+Needs Docker with Compose v2 and a reverse proxy that terminates TLS (nginx below). TaoWatch publishes no public
+ports: the `web` container listens on `127.0.0.1:8088` (`WEB_BIND`, `WEB_PORT`). Only `docker-compose.yml` and
+`.env` are needed on the server; the images are pulled from GitHub Container Registry.
 
 ```sh
+mkdir taowatch && cd taowatch
 curl -fsSLO https://raw.githubusercontent.com/taowatch/taowatch/main/docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/taowatch/taowatch/main/.env.example -o .env
 # edit .env:
-#   DOMAIN=taowatch.example.com
-#   RP_ID=taowatch.example.com
+#   RP_ID=taowatch.example.com                  (the host users open)
 #   RP_ORIGIN=https://taowatch.example.com
-#   POSTGRES_PASSWORD=…  (and the same password inside DATABASE_URL)
-#   TAOWATCH_TAG=latest   (or a release such as 0.1.0)
+#   POSTGRES_PASSWORD=…                         (and the same password inside DATABASE_URL)
+#   TAOWATCH_DATA_DIR=./data                    (host folder for the database)
+#   TAOWATCH_TAG=latest                         (or a release such as 0.1.0)
 docker compose pull
 docker compose up -d
 docker compose logs -f api indexer
@@ -31,8 +33,42 @@ docker compose logs -f api indexer
 
 Update: `docker compose pull && docker compose up -d`. The API applies database migrations on start.
 
+**Data** is stored in host folders: `${TAOWATCH_DATA_DIR}/postgres` (default `./data/postgres`). Back it up with
+`docker compose exec db pg_dump -U taowatch taowatch > backup.sql`, or stop the stack and copy the folder.
+
+### nginx
+
+`/ws` needs the WebSocket upgrade headers; everything else is a plain proxy.
+
+```nginx
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name taowatch.example.com;
+    # ssl_certificate / ssl_certificate_key …
+
+    location /ws {
+        proxy_pass http://127.0.0.1:8088;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8088;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
 The first user to register becomes **admin** and can create invite codes for others (Settings → Users & invites).
-Passkeys need HTTPS on the real domain; `RP_ID` must equal the domain users open.
+Passkeys only work over HTTPS, and `RP_ID` must equal the host name in the browser.
 
 ## CI/CD
 

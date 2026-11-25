@@ -1,4 +1,14 @@
-{$DOMAIN:localhost} {
+# Plain HTTP on :80 inside the container. TLS is terminated by the reverse proxy in front
+# (e.g. nginx), which must forward WebSocket upgrades for /ws.
+{
+	auto_https off
+	admin off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
 	encode zstd gzip
 
 	# API + WebSocket
@@ -17,9 +27,8 @@
 	}
 
 	header {
-		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "same-origin"
-		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss: ws:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'"
 	}
 }

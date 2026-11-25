@@ -2,6 +2,10 @@ name: taowatch
 
 # Images are published to GHCR by .github/workflows/images.yml.
 # TAOWATCH_TAG: latest (main) · sha-<short> (one commit) · 0.1.0 (release tag v0.1.0)
+#
+# Data lives in host folders under ${TAOWATCH_DATA_DIR} (default ./data).
+# No public ports: the web container listens on ${WEB_BIND}:${WEB_PORT} (default 127.0.0.1:8088)
+# for a reverse proxy such as nginx, which terminates TLS. See README → Deploy.
 
 x-backend: &backend
   image: ghcr.io/taowatch/taowatch-backend:${TAOWATCH_TAG:-latest}
@@ -16,7 +20,7 @@ services:
       POSTGRES_DB: taowatch
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      - pgdata:/var/lib/postgresql
+      - ${TAOWATCH_DATA_DIR:-./data}/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U taowatch -d taowatch"]
       interval: 5s
@@ -43,20 +47,8 @@ services:
 
   web:
     image: ghcr.io/taowatch/taowatch-web:${TAOWATCH_TAG:-latest}
-    environment:
-      DOMAIN: ${DOMAIN:-localhost}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"   # HTTP/3
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8088}:80"
     depends_on:
       api: { condition: service_healthy }
     restart: unless-stopped
-
-volumes:
-  pgdata: {}
-  caddy_data: {}
-  caddy_config: {}
