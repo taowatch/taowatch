@@ -1,0 +1,47 @@
+/* Design tokens — keep in sync with PLAN.md §7. Each color has exactly one meaning. */
+:root {
+  --bg: #0b0f0c;
+  --bg-raised: #0e150f;
+  --row-hover: #142019;
+  --line: #2b3b30;          /* decorative borders */
+  --line-strong: #64796b;   /* control borders, ≥3:1 on --bg */
+  --text: #c9d4c5;
+  --text-strong: #e6edE3;
+  --text-dim: #8fa093;      /* ≥4.5:1 on --bg */
+  --accent: #7ee787;        /* brand, active, focus */
+  --up: #7ee787;            /* always with ▲ + */
+  --down: #ff7b72;          /* always with ▼ − */
+  --stake: #56d4dd;
+  --free: #c9d4c5;
+  --claimable: #f2cc60;     /* claimable only */
+  --warn: #ffa657;          /* connection warnings only */
+  --info: #79c0ff;
+  --font: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+a { color: var(--info); }
+a:hover { color: #a5d6ff; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button, input, select { font: inherit; color: inherit; }
+
+.page { max-width: 1400px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+.panel { border: 1px solid var(--line); padding: 14px 16px; }
+.dim { color: var(--text-dim); }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.claimable { color: var(--claimable); }
+.stake { color: var(--stake); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

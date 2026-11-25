@@ -1,0 +1,19 @@
+[package]
+name = "taowatch-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+dotenvy.workspace = true
+sqlx.workspace = true
+subxt.workspace = true
+subxt-rpcs.workspace = true
+scale-decode.workspace = true
+rust_decimal.workspace = true

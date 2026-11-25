@@ -1,0 +1,66 @@
+name: taowatch
+
+# Images are built by GitHub Actions (.github/workflows/images.yml) and pulled from GHCR:
+#   ${TAOWATCH_IMAGE_PREFIX}-backend:${TAOWATCH_TAG}   (api + indexer)
+#   ${TAOWATCH_IMAGE_PREFIX}-web:${TAOWATCH_TAG}       (Caddy + SPA)
+# `docker compose up -d` pulls them; `docker compose up -d --build` builds locally instead.
+
+x-backend: &backend
+  image: ${TAOWATCH_IMAGE_PREFIX:?set TAOWATCH_IMAGE_PREFIX in .env, e.g. ghcr.io/<github-user>/taowatch}-backend:${TAOWATCH_TAG:-latest}
+  build: { context: ./backend }
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  db:
+    image: timescale/timescaledb:2.31.2-pg18
+    environment:
+      POSTGRES_USER: taowatch
+      POSTGRES_DB: taowatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taowatch -d taowatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    command: ["api"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  indexer:
+    <<: *backend
+    command: ["indexer", "run"]
+    depends_on:
+      api: { condition: service_healthy }   # api applies the migrations first
+
+  web:
+    image: ${TAOWATCH_IMAGE_PREFIX}-web:${TAOWATCH_TAG:-latest}
+    build: { context: ./web }
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
+  caddy_data: {}
+  caddy_config: {}

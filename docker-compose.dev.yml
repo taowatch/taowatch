@@ -1,0 +1,7 @@
+# Local development: run only the database in Docker and the Rust/web apps on the host.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+#   DATABASE_URL=postgres://taowatch:<password>@127.0.0.1:5432/taowatch cargo run --bin api
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

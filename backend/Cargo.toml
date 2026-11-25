@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/api", "crates/indexer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+taowatch-core = { path = "crates/core" }
+
+anyhow = "1.0.105"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+dotenvy = "0.15.7"
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing"] }
+uuid = { version = "1.29.3", features = ["v4", "serde"] }
+rust_decimal = { version = "1.43.0", features = ["serde-with-str"] }
+
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid", "time", "rust_decimal", "json"] }
+
+subxt = "0.51.1"
+subxt-rpcs = "0.51.1"
+scale-decode = { version = "0.16.2", features = ["derive"] }
+
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+tower-http = { version = "0.7.1", features = ["trace", "cors", "fs"] }
+tower-sessions = "0.15.0"
+tower-sessions-sqlx-store = { version = "0.16.0", features = ["postgres"] }
+webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+url = "2.5.9"
+rand = "0.10.4"
+sha2 = "0.11.1"
+hex = "0.4.3"
+futures = "0.3.34"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
