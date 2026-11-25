@@ -15,6 +15,8 @@ pub enum Notice {
     Event(String, u64),
     /// Backfill progress (address, "42" | "done" | "error").
     Backfill(String, String),
+    /// New TAO/USDT price, JSON `{"usd": "...", "change_24h": "..."}` from the indexer.
+    Price(String),
 }
 
 #[derive(Clone)]
@@ -22,4 +24,8 @@ pub struct AppState {
     pub pool: PgPool,
     pub webauthn: Arc<Webauthn>,
     pub notices: broadcast::Sender<Notice>,
+    /// `open` | `invite` | `closed` (TAOWATCH_REGISTRATION).
+    pub registration: Arc<str>,
+    /// Failed password sign-ins per username: (failures, first failure time).
+    pub login_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>>,
 }

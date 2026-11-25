@@ -18,7 +18,7 @@ serde_json = "1.0.154"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 dotenvy = "0.15.7"
-time = { version = "0.3.55", features = ["serde", "formatting", "parsing"] }
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
 uuid = { version = "1.29.3", features = ["v4", "serde"] }
 rust_decimal = { version = "1.43.0", features = ["serde-with-str"] }
 
@@ -38,6 +38,11 @@ url = "2.5.9"
 rand = "0.10.4"
 sha2 = "0.11.1"
 hex = "0.4.3"
+argon2 = "0.6.0"
+# TAO price from Binance's WebSocket stream. TLS via rustls with the same `ring` provider
+# sqlx uses (installed at start-up), so the binary carries a single crypto provider.
+tokio-tungstenite = { version = "0.30.0", features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 futures = "0.3.34"
 
 [profile.release]

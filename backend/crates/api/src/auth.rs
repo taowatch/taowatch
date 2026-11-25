@@ -1,4 +1,4 @@
-//! Passkey auth (webauthn-rs), sessions, invites and recovery codes.
+//! Sign-in (passkeys via webauthn-rs, or username + Argon2id password), sessions, invites, recovery codes.
 
 use axum::Json;
 use axum::extract::{FromRequestParts, Path, State};
@@ -16,6 +16,8 @@ use crate::state::AppState;
 
 const SESSION_UID: &str = "uid";
 const RECOVERY_CODES: usize = 6;
+/// Set after a recovery-code sign-in: the next password change needs no current password.
+const SESSION_RECOVERED: &str = "recovered";
 
 // ── current user ───────────────────────────────────────────────────────────
 
@@ -102,6 +104,8 @@ async fn touch_passkey(pool: &sqlx::PgPool, mut keys: Vec<(Vec<u8>, Passkey)>, r
 
 async fn start_session(session: &Session, uid: Uuid) -> ApiResult<()> {
     session.cycle_id().await?; // prevent session fixation
+    // A recovery grant belongs to the sign-in that created it, never to a later one.
+    session.remove_value(SESSION_RECOVERED).await?;
     session.insert(SESSION_UID, uid).await?;
     Ok(())
 }
@@ -146,20 +150,8 @@ pub async fn register_start(
     if !valid_username(&username) {
         return Err(ApiError::bad_request("username: 2–32 characters, a–z 0–9 _ . -"));
     }
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&s.pool).await?;
-    let invite = req.invite.map(|i| i.trim().to_ascii_uppercase());
-    if users > 0 {
-        let code = invite.as_deref().ok_or_else(|| ApiError::forbidden("an invite code is required"))?;
-        let ok: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM invites WHERE code = $1 AND used_by IS NULL AND revoked_at IS NULL AND expires_at > now())",
-        )
-        .bind(code)
-        .fetch_one(&s.pool)
-        .await?;
-        if !ok {
-            return Err(ApiError::forbidden("invite code is invalid, used or expired"));
-        }
-    }
+    let invite = normalize_invite(req.invite);
+    check_can_register(&s, invite.as_deref()).await?;
     let taken: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE username = $1)").bind(&username).fetch_one(&s.pool).await?;
     if taken {
@@ -194,37 +186,9 @@ pub async fn register_finish(
     let passkey = s.webauthn.finish_passkey_registration(&req.credential, &pending.state)?;
 
     let mut tx = s.pool.begin().await?;
-    // Re-check under the transaction: the first user becomes admin.
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&mut *tx).await?;
-    let role = if users == 0 { "admin" } else { "user" };
-    if users > 0 {
-        // Lock the invite row so two sign-ups cannot use the same code.
-        let valid: Option<String> = sqlx::query_scalar(
-            "SELECT code FROM invites WHERE code = $1 AND used_by IS NULL AND revoked_at IS NULL AND expires_at > now() FOR UPDATE",
-        )
-        .bind(pending.invite.as_deref().unwrap_or(""))
-        .fetch_optional(&mut *tx)
-        .await?;
-        if valid.is_none() {
-            return Err(ApiError::forbidden("invite code is invalid, used or expired"));
-        }
-    }
-    let user = sqlx::query_as::<_, AuthUser>(
-        "INSERT INTO users (id, username, display_name, role) VALUES ($1, $2, $3, $4) RETURNING id, username, display_name, role",
-    )
-    .bind(pending.user_id)
-    .bind(&pending.username)
-    .bind(&pending.display_name)
-    .bind(role)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| match e {
-        sqlx::Error::Database(d) if d.is_unique_violation() => ApiError::conflict("username is taken"),
-        e => e.into(),
-    })?;
-    if let Some(code) = &pending.invite {
-        sqlx::query("UPDATE invites SET used_by = $2 WHERE code = $1").bind(code).bind(user.id).execute(&mut *tx).await?;
-    }
+    let user =
+        create_user(&s, &mut tx, pending.user_id, &pending.username, pending.display_name.as_deref(), pending.invite.as_deref(), None)
+            .await?;
     sqlx::query("INSERT INTO passkeys (id, user_id, credential, name) VALUES ($1, $2, $3, $4)")
         .bind(passkey.cred_id().as_slice())
         .bind(user.id)
@@ -237,6 +201,284 @@ pub async fn register_finish(
 
     start_session(&session, user.id).await?;
     Ok(Json(RegisterDone { user, recovery_codes }))
+}
+
+// ── who may register ───────────────────────────────────────────────────────
+
+fn normalize_invite(i: Option<String>) -> Option<String> {
+    i.map(|i| i.trim().to_ascii_uppercase()).filter(|i| !i.is_empty())
+}
+
+/// Early check before a ceremony starts (re-checked inside `create_user`).
+async fn check_can_register(s: &AppState, invite: Option<&str>) -> ApiResult<()> {
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&s.pool).await?;
+    if users == 0 {
+        return Ok(()); // the first account is always allowed and becomes admin
+    }
+    match &*s.registration {
+        "open" => Ok(()),
+        "closed" => Err(ApiError::forbidden("sign-up is closed on this server")),
+        _ => {
+            let code = invite.ok_or_else(|| ApiError::forbidden("an invite code is required"))?;
+            let ok: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM invites WHERE code = $1 AND used_by IS NULL AND revoked_at IS NULL AND expires_at > now())",
+            )
+            .bind(code)
+            .fetch_one(&s.pool)
+            .await?;
+            if ok { Ok(()) } else { Err(ApiError::forbidden("invite code is invalid, used or expired")) }
+        }
+    }
+}
+
+/// Insert the user inside `tx`, enforcing the registration mode. The first user becomes admin.
+async fn create_user(
+    s: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    username: &str,
+    display_name: Option<&str>,
+    invite: Option<&str>,
+    password_hash: Option<&str>,
+) -> ApiResult<AuthUser> {
+    // Serialize sign-ups so two concurrent first sign-ups cannot both become admin.
+    sqlx::query("SELECT pg_advisory_xact_lock(7_271_001)").execute(&mut **tx).await?;
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&mut **tx).await?;
+    let role = if users == 0 { "admin" } else { "user" };
+    let mut use_invite = None;
+    if users > 0 {
+        match &*s.registration {
+            "open" => {}
+            "closed" => return Err(ApiError::forbidden("sign-up is closed on this server")),
+            _ => {
+                // Lock the invite row so two sign-ups cannot use the same code.
+                let valid: Option<String> = sqlx::query_scalar(
+                    "SELECT code FROM invites WHERE code = $1 AND used_by IS NULL AND revoked_at IS NULL AND expires_at > now() FOR UPDATE",
+                )
+                .bind(invite.unwrap_or(""))
+                .fetch_optional(&mut **tx)
+                .await?;
+                use_invite = Some(valid.ok_or_else(|| ApiError::forbidden("invite code is invalid, used or expired"))?);
+            }
+        }
+    }
+    let user = sqlx::query_as::<_, AuthUser>(
+        "INSERT INTO users (id, username, display_name, role, password_hash) VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, username, display_name, role",
+    )
+    .bind(id)
+    .bind(username)
+    .bind(display_name)
+    .bind(role)
+    .bind(password_hash)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(d) if d.is_unique_violation() => ApiError::conflict("username is taken"),
+        e => e.into(),
+    })?;
+    if let Some(code) = use_invite {
+        sqlx::query("UPDATE invites SET used_by = $2 WHERE code = $1").bind(code).bind(user.id).execute(&mut **tx).await?;
+    }
+    Ok(user)
+}
+
+#[derive(Serialize)]
+pub struct AuthConfig {
+    /// `open` | `invite` | `closed`
+    registration: String,
+    /// No account exists yet: the next sign-up becomes admin and needs no invite.
+    first_user: bool,
+}
+
+/// Public: lets the sign-in page show or hide the invite field.
+pub async fn auth_config(State(s): State<AppState>) -> ApiResult<Json<AuthConfig>> {
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&s.pool).await?;
+    Ok(Json(AuthConfig { registration: s.registration.to_string(), first_user: users == 0 }))
+}
+
+// ── username + password ────────────────────────────────────────────────────
+
+const PASSWORD_MIN: usize = 10;
+const PASSWORD_MAX: usize = 128;
+const MAX_FAILURES: u32 = 5;
+const LOCKOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// Upper bound on usernames tracked for lockout (unknown names are tracked too, so a 429
+/// does not reveal which usernames exist).
+const MAX_TRACKED: usize = 10_000;
+/// How long after a recovery-code sign-in the password may be set without the current one.
+const RECOVERY_GRANT_SECS: i64 = 10 * 60;
+
+type Failures = std::collections::HashMap<String, (u32, std::time::Instant)>;
+
+/// Reserve one attempt for `username` before the slow verify, so parallel requests cannot all
+/// pass the check. Returns the minutes to wait when the limit is reached.
+fn reserve_attempt(f: &mut Failures, username: &str, now: std::time::Instant) -> Result<(), u64> {
+    if f.len() >= MAX_TRACKED {
+        f.retain(|_, (_, since)| now.duration_since(*since) <= LOCKOUT);
+        if f.len() >= MAX_TRACKED
+            && let Some(oldest) = f.iter().min_by_key(|(_, (_, since))| *since).map(|(k, _)| k.clone())
+        {
+            f.remove(&oldest);
+        }
+    }
+    let e = f.entry(username.to_owned()).or_insert((0, now));
+    if now.duration_since(e.1) > LOCKOUT {
+        *e = (0, now);
+    }
+    if e.0 >= MAX_FAILURES {
+        return Err((LOCKOUT.saturating_sub(now.duration_since(e.1))).as_secs() / 60 + 1);
+    }
+    e.0 += 1;
+    Ok(())
+}
+
+fn check_password_policy(p: &str) -> ApiResult<()> {
+    let n = p.chars().count();
+    if n < PASSWORD_MIN {
+        return Err(ApiError::bad_request(format!("password: at least {PASSWORD_MIN} characters")));
+    }
+    if n > PASSWORD_MAX {
+        return Err(ApiError::bad_request(format!("password: at most {PASSWORD_MAX} characters")));
+    }
+    Ok(())
+}
+
+/// Argon2id (default params), off the async runtime because it is deliberately slow.
+async fn hash_password(p: String) -> ApiResult<String> {
+    tokio::task::spawn_blocking(move || {
+        use argon2::password_hash::PasswordHasher;
+        argon2::Argon2::default().hash_password(p.as_bytes()).map(|h| h.to_string())
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow::anyhow!("hash task: {e}")))?
+    .map_err(|e| ApiError::from(anyhow::anyhow!("hash: {e}")))
+}
+
+async fn verify_password(p: String, phc: String) -> bool {
+    tokio::task::spawn_blocking(move || {
+        use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
+        PasswordHash::new(&phc).map(|h| argon2::Argon2::default().verify_password(p.as_bytes(), &h).is_ok()).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Hash compared against when the user does not exist, so timing does not reveal valid usernames.
+static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use argon2::password_hash::PasswordHasher;
+    argon2::Argon2::default().hash_password(b"taowatch-timing-equalizer").map(|h| h.to_string()).unwrap_or_default()
+});
+
+#[derive(Deserialize)]
+pub struct PasswordRegister {
+    username: String,
+    password: String,
+    display_name: Option<String>,
+    invite: Option<String>,
+}
+
+pub async fn password_register(
+    State(s): State<AppState>,
+    session: Session,
+    Json(req): Json<PasswordRegister>,
+) -> ApiResult<Json<RegisterDone>> {
+    let username = req.username.trim().to_ascii_lowercase();
+    if !valid_username(&username) {
+        return Err(ApiError::bad_request("username: 2–32 characters, a–z 0–9 _ . -"));
+    }
+    check_password_policy(&req.password)?;
+    let invite = normalize_invite(req.invite);
+    check_can_register(&s, invite.as_deref()).await?;
+    let hash = hash_password(req.password).await?;
+    let mut tx = s.pool.begin().await?;
+    let user = create_user(&s, &mut tx, Uuid::new_v4(), &username, req.display_name.as_deref(), invite.as_deref(), Some(&hash)).await?;
+    let recovery_codes = new_recovery_codes(&mut tx, user.id).await?;
+    tx.commit().await?;
+    start_session(&session, user.id).await?;
+    Ok(Json(RegisterDone { user, recovery_codes }))
+}
+
+#[derive(Deserialize)]
+pub struct PasswordLogin {
+    username: String,
+    password: String,
+}
+
+pub async fn password_login(State(s): State<AppState>, session: Session, Json(req): Json<PasswordLogin>) -> ApiResult<Json<AuthUser>> {
+    let username = req.username.trim().to_ascii_lowercase();
+    let reserved = reserve_attempt(&mut s.login_failures.lock().expect("lock"), &username, std::time::Instant::now());
+    if let Err(wait) = reserved {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, format!("too many failed attempts; try again in {wait} min or use a passkey")));
+    }
+    let row: Option<(Uuid, Option<String>)> =
+        sqlx::query_as("SELECT id, password_hash FROM users WHERE username = $1").bind(&username).fetch_optional(&s.pool).await?;
+    let (id, phc) = match row {
+        Some((id, Some(phc))) => (Some(id), phc),
+        _ => (None, DUMMY_HASH.clone()),
+    };
+    let ok = verify_password(req.password, phc).await && id.is_some();
+    if !ok {
+        // The attempt was already counted by `reserve_attempt`.
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "username or password is wrong".into()));
+    }
+    s.login_failures.lock().expect("lock").remove(&username);
+    let id = id.expect("checked");
+    start_session(&session, id).await?;
+    Ok(Json(
+        sqlx::query_as::<_, AuthUser>("SELECT id, username, display_name, role FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct SetPassword {
+    /// Required when the account already has a password.
+    current: Option<String>,
+    new: String,
+}
+
+pub async fn set_password(
+    State(s): State<AppState>,
+    session: Session,
+    user: AuthUser,
+    Json(req): Json<SetPassword>,
+) -> ApiResult<StatusCode> {
+    check_password_policy(&req.new)?;
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1").bind(user.id).fetch_one(&s.pool).await?;
+    let recovered = session
+        .remove_value(SESSION_RECOVERED)
+        .await?
+        .and_then(|v| v.as_i64())
+        .is_some_and(|at| OffsetDateTime::now_utc().unix_timestamp() - at <= RECOVERY_GRANT_SECS);
+    if let Some(phc) = existing
+        && !recovered
+        && !verify_password(req.current.unwrap_or_default(), phc).await
+    {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "current password is wrong".into()));
+    }
+    let hash = hash_password(req.new).await?;
+    sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1").bind(user.id).bind(hash).execute(&s.pool).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct Methods {
+    password: bool,
+    passkeys: i64,
+}
+
+/// Which sign-in methods the current user has (Settings).
+pub async fn methods(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Methods>> {
+    let (password, passkeys): (bool, i64) =
+        sqlx::query_as("SELECT password_hash IS NOT NULL, (SELECT count(*) FROM passkeys WHERE user_id = $1) FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&s.pool)
+            .await?;
+    Ok(Json(Methods { password, passkeys }))
 }
 
 // ── login ──────────────────────────────────────────────────────────────────
@@ -339,6 +581,8 @@ pub async fn recover(State(s): State<AppState>, session: Session, Json(req): Jso
     // Same message for unknown user and wrong code.
     let user = user.ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "username or recovery code is wrong".into()))?;
     start_session(&session, user.id).await?;
+    // Allows one password reset without the old password for a few minutes (see `set_password`).
+    session.insert(SESSION_RECOVERED, OffsetDateTime::now_utc().unix_timestamp()).await?;
     Ok(Json(user))
 }
 
@@ -440,8 +684,10 @@ pub async fn delete_passkey(State(s): State<AppState>, user: AuthUser, Path(id):
     // Lock this user's passkeys, then count, so two parallel deletes cannot remove the last one.
     let ids: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT id FROM passkeys WHERE user_id = $1 FOR UPDATE").bind(user.id).fetch_all(&mut *tx).await?;
-    if ids.len() <= 1 {
-        return Err(ApiError::conflict("cannot remove your last passkey"));
+    let has_password: bool =
+        sqlx::query_scalar("SELECT password_hash IS NOT NULL FROM users WHERE id = $1").bind(user.id).fetch_one(&mut *tx).await?;
+    if ids.len() <= 1 && !has_password {
+        return Err(ApiError::conflict("cannot remove your last passkey — set a password first, or add another passkey"));
     }
     let n = sqlx::query("DELETE FROM passkeys WHERE user_id = $1 AND id = decode($2, 'hex')")
         .bind(user.id)
@@ -569,11 +815,51 @@ mod tests {
     }
 
     #[test]
+    fn password_policy() {
+        assert!(check_password_policy("short").is_err());
+        assert!(check_password_policy("long enough pw").is_ok());
+        assert!(check_password_policy(&"x".repeat(129)).is_err());
+    }
+
+    #[tokio::test]
+    async fn argon2_roundtrip() {
+        let h = hash_password("correct horse battery".into()).await.expect("hash");
+        assert!(h.starts_with("$argon2id$"));
+        assert!(verify_password("correct horse battery".into(), h.clone()).await);
+        assert!(!verify_password("wrong password!!".into(), h).await);
+        assert!(!verify_password("anything at all".into(), "not a phc string".into()).await);
+    }
+
+    #[test]
     fn usernames() {
         assert!(valid_username("alice"));
         assert!(valid_username("m.n_2-x"));
         assert!(!valid_username("M"));
         assert!(!valid_username("bad name"));
         assert!(!valid_username(&"a".repeat(33)));
+    }
+
+    #[test]
+    fn lockout_counts_attempts_before_verifying() {
+        let mut f = Failures::new();
+        let t0 = std::time::Instant::now();
+        for _ in 0..MAX_FAILURES {
+            assert!(reserve_attempt(&mut f, "alice", t0).is_ok());
+        }
+        // The 6th parallel attempt is refused even though none has finished yet.
+        assert!(reserve_attempt(&mut f, "alice", t0).is_err());
+        assert!(reserve_attempt(&mut f, "bob", t0).is_ok());
+        // After the lockout window the counter starts over.
+        assert!(reserve_attempt(&mut f, "alice", t0 + LOCKOUT + std::time::Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn lockout_map_is_bounded() {
+        let mut f = Failures::new();
+        let t0 = std::time::Instant::now();
+        for i in 0..MAX_TRACKED + 50 {
+            let _ = reserve_attempt(&mut f, &format!("u{i}"), t0);
+        }
+        assert!(f.len() <= MAX_TRACKED);
     }
 }

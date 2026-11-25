@@ -9,6 +9,7 @@
 
 mod backfill;
 mod live;
+mod price;
 mod schedule;
 mod store;
 
@@ -24,6 +25,8 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
+    // One TLS crypto provider for the whole process (sqlx and reqwest both use rustls + ring).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
     let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -41,7 +44,8 @@ async fn main() -> Result<()> {
             info!(live = %cfg.subtensor_ws, archive = %cfg.subtensor_archive_ws, workers = cfg.backfill_workers, "indexer starting");
             tokio::try_join!(
                 live::run(pool.clone(), cfg.subtensor_ws.clone()),
-                backfill::run(pool, cfg.subtensor_archive_ws.clone(), cfg.backfill_workers),
+                backfill::run(pool.clone(), cfg.subtensor_archive_ws.clone(), cfg.backfill_workers),
+                price::run(pool),
             )?;
             Ok(())
         }

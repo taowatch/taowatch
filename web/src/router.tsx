@@ -1,33 +1,53 @@
-import { createBrowserRouter, Outlet } from 'react-router';
+import { createBrowserRouter, Outlet, useNavigate } from 'react-router';
 import { StatusBar } from './components/StatusBar';
-import { Placeholder } from './routes/Placeholder';
-import { Dashboard } from './routes/Dashboard';
+import { RequireAuth, useMe } from './components/RequireAuth';
+import { useLive } from './lib/live';
+import { useKeys } from './lib/hotkeys';
+import { Login } from './routes/Login';
 
 function Shell() {
+  const navigate = useNavigate();
+  const me = useMe();
+  useLive(me.isSuccess);
+  useKeys({
+    '1': () => navigate('/'),
+    '2': () => navigate('/wallets'),
+    '3': () => navigate('/claimable'),
+    '4': () => navigate('/activity'),
+    '5': () => navigate('/alerts'),
+    '6': () => navigate('/settings'),
+    '?': () => navigate('/help'),
+    a: () => navigate('/onboarding'),
+  });
   return (
-    <>
+    <RequireAuth>
+      <a href="#main" className="skip">Skip to content</a>
       <StatusBar />
-      <Outlet />
-    </>
+      <div id="main">
+        <Outlet />
+      </div>
+    </RequireAuth>
   );
 }
 
-// One route per screen of the UI design.
 export const router = createBrowserRouter([
-  { path: '/login', element: <Placeholder title="Sign in" artboard="Login" /> },
+  { path: '/login', element: <Login /> },
   {
     element: <Shell />,
+    // Shown while a lazily loaded page is fetched on the first visit.
+    hydrateFallbackElement: <p role="status" className="page dim">Loading…</p>,
     children: [
-      { path: '/', element: <Dashboard /> },
-      { path: '/onboarding', element: <Placeholder title="Add wallet" artboard="Onboarding" /> },
-      { path: '/wallets', element: <Placeholder title="Wallets" artboard="Wallet" /> },
-      { path: '/wallets/:address', element: <Placeholder title="Wallet" artboard="Wallet" /> },
-      { path: '/wallets/:address/positions', element: <Placeholder title="Stake positions" artboard="Positions" /> },
-      { path: '/claimable', element: <Placeholder title="Claimable" artboard="Claimable" /> },
-      { path: '/activity', element: <Placeholder title="Activity" artboard="Activity" /> },
-      { path: '/alerts', element: <Placeholder title="Alerts" artboard="Alerts" /> },
-      { path: '/settings', element: <Placeholder title="Settings" artboard="Settings" /> },
-      { path: '/help', element: <Placeholder title="Help" artboard="Help" /> },
+      { path: '/', lazy: () => import('./routes/Dashboard').then((m) => ({ Component: m.Dashboard })) },
+      { path: '/onboarding', lazy: () => import('./routes/Onboarding').then((m) => ({ Component: m.Onboarding })) },
+      { path: '/wallets', lazy: () => import('./routes/Wallets').then((m) => ({ Component: m.Wallets })) },
+      { path: '/wallets/:address', lazy: () => import('./routes/WalletDetail').then((m) => ({ Component: m.WalletDetail })) },
+      { path: '/wallets/:address/positions', lazy: () => import('./routes/Positions').then((m) => ({ Component: m.Positions })) },
+      { path: '/claimable', lazy: () => import('./routes/Claimable').then((m) => ({ Component: m.Claimable })) },
+      { path: '/activity', lazy: () => import('./routes/Activity').then((m) => ({ Component: m.Activity })) },
+      { path: '/alerts', lazy: () => import('./routes/Alerts').then((m) => ({ Component: m.Alerts })) },
+      { path: '/settings', lazy: () => import('./routes/Settings').then((m) => ({ Component: m.Settings })) },
+      { path: '/help', lazy: () => import('./routes/Help').then((m) => ({ Component: m.Help })) },
+      { path: '*', lazy: () => import('./routes/Dashboard').then((m) => ({ Component: m.Dashboard })) },
     ],
   },
 ]);

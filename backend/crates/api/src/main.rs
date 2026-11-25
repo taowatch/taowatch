@@ -1,5 +1,6 @@
 //! TaoWatch HTTP API + WebSocket.
 
+mod alerts;
 mod auth;
 mod data;
 mod error;
@@ -43,7 +44,13 @@ async fn main() -> Result<()> {
         .with_expiry(Expiry::OnInactivity(time::Duration::days(30)));
 
     let (notices, _) = broadcast::channel(256);
-    let state = AppState { pool, webauthn: Arc::new(webauthn), notices };
+    let state = AppState {
+        pool,
+        webauthn: Arc::new(webauthn),
+        notices,
+        registration: cfg.registration.clone().into(),
+        login_failures: Default::default(),
+    };
     tokio::spawn(ws::listen(state.clone()));
 
     let dev_login = std::env::var("TAOWATCH_DEV_LOGIN").as_deref() == Ok("1") && cfg.rp_id == "localhost" && origin.scheme() != "https";
@@ -63,6 +70,7 @@ fn router() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/chain/status", get(data::chain_status))
+        .route("/api/price", get(data::price))
         // auth
         .route("/api/auth/register/start", post(auth::register_start))
         .route("/api/auth/register/finish", post(auth::register_finish))
@@ -70,6 +78,11 @@ fn router() -> Router<AppState> {
         .route("/api/auth/login/finish", post(auth::login_finish))
         .route("/api/auth/recover", post(auth::recover))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/config", get(auth::auth_config))
+        .route("/api/auth/password/register", post(auth::password_register))
+        .route("/api/auth/password/login", post(auth::password_login))
+        .route("/api/auth/password", post(auth::set_password))
+        .route("/api/auth/methods", get(auth::methods))
         .route("/api/me", get(auth::me))
         .route("/api/passkeys", get(auth::list_passkeys))
         .route("/api/passkeys/register/start", post(auth::add_passkey_start))
@@ -90,6 +103,8 @@ fn router() -> Router<AppState> {
         .route("/api/claims", get(data::claims))
         .route("/api/claimable", get(data::claimable))
         .route("/api/events", get(data::events))
+        .route("/api/alerts", get(alerts::list).post(alerts::create))
+        .route("/api/alerts/{id}", patch(alerts::patch).delete(alerts::delete))
         // realtime
         .route("/ws", get(ws::ws_handler))
 }

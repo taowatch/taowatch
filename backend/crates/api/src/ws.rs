@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use crate::auth::AuthUser;
 use crate::state::{AppState, Notice};
 
-pub const CHANNELS: [&str; 4] = ["chain_status", "wallet_changed", "event", "backfill"];
+pub const CHANNELS: [&str; 5] = ["chain_status", "wallet_changed", "event", "backfill", "price"];
 
 /// Parse one NOTIFY into a [`Notice`]. Payload formats are written by `indexer::store`.
 pub fn parse_notice(channel: &str, payload: &str) -> Option<Notice> {
@@ -31,6 +31,7 @@ pub fn parse_notice(channel: &str, payload: &str) -> Option<Notice> {
             let (addr, block) = payload.rsplit_once(':')?;
             Some(Notice::Event(addr.to_owned(), block.parse().ok()?))
         }
+        "price" => Some(Notice::Price(payload.to_owned())),
         "backfill" => {
             let (addr, progress) = payload.rsplit_once(':')?;
             Some(Notice::Backfill(addr.to_owned(), progress.to_owned()))
@@ -99,6 +100,9 @@ async fn session(s: AppState, user: AuthUser, socket: WebSocket) {
             n = notices.recv() => {
                 let msg = match n {
                     Ok(Notice::Block(b)) => Some(json!({ "type": "block", "block": b })),
+                    Ok(Notice::Price(p)) => serde_json::from_str::<serde_json::Value>(&p)
+                        .ok()
+                        .map(|v| json!({ "type": "price", "usd": v["usd"], "change_24h": v["change_24h"] })),
                     Ok(Notice::Wallet(a)) if wallets.contains(&a) => latest_json(&s, &a).await.map(|l| json!({ "type": "wallet", "address": a, "latest": l })),
                     Ok(Notice::Event(a, b)) if wallets.contains(&a) => Some(json!({ "type": "event", "address": a, "block": b })),
                     Ok(Notice::Backfill(a, p)) if wallets.contains(&a) => Some(json!({ "type": "backfill", "address": a, "progress": p })),
@@ -165,6 +169,7 @@ mod tests {
         assert!(matches!(parse_notice("wallet_changed", "5GSs"), Some(Notice::Wallet(a)) if a == "5GSs"));
         assert!(matches!(parse_notice("event", "5GSs:9533159"), Some(Notice::Event(a, 9533159)) if a == "5GSs"));
         assert!(matches!(parse_notice("backfill", "5GSs:done"), Some(Notice::Backfill(a, p)) if a == "5GSs" && p == "done"));
+        assert!(matches!(parse_notice("price", r#"{"usd":"412.3"}"#), Some(Notice::Price(p)) if p.contains("412.3")));
         assert!(parse_notice("event", "garbage").is_none());
         assert!(parse_notice("other", "x").is_none());
     }

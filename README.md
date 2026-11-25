@@ -25,6 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/taowatch/taowatch/main/.env.example
 #   RP_ORIGIN=https://taowatch.example.com
 #   POSTGRES_PASSWORD=…                         (and the same password inside DATABASE_URL)
 #   TAOWATCH_DATA_DIR=./data                    (host folder for the database)
+#   TAOWATCH_REGISTRATION=open                  (open | invite | closed)
 #   TAOWATCH_TAG=latest                         (or a release such as 0.1.0)
 docker compose pull
 docker compose up -d
@@ -67,8 +68,11 @@ server {
 }
 ```
 
-The first user to register becomes **admin** and can create invite codes for others (Settings → Users & invites).
-Passkeys only work over HTTPS, and `RP_ID` must equal the host name in the browser.
+**Accounts.** Users sign in with **username + password** (Argon2id; 5 failed attempts lock the username for
+15 minutes) or a **passkey**, and can use both (Settings → Password / Passkeys). Every account gets six one-time
+recovery codes. The first account becomes **admin**. Sign-up is controlled by `TAOWATCH_REGISTRATION`:
+`open` (anyone who can reach the site), `invite` (needs an invite code from Settings → Users & invites;
+used when the variable is unset) or `closed` (no new accounts). Passkeys only work over HTTPS, and `RP_ID` must equal the host name in the browser.
 
 ## CI/CD
 
@@ -123,4 +127,6 @@ is allowed for the binary. Per-application firewalls treat every new build as a 
 - Stake comes from `StakeInfoRuntimeApi`; claimable from `BetaBasketRuntimeApi` (root claim "beta basket").
 - Claimed TAO comes from `BasketClaimed` **events**. The `BasketClaimed` storage is basket bookkeeping that also
   moves on stake changes — it only locates candidate blocks.
+- The TAO price comes from Binance's public `taousdt@ticker` WebSocket (no key); the status bar updates at most
+  every 5 s and a sample is stored every 15 minutes. `TAOWATCH_PRICE=off` disables it, `TAOWATCH_PRICE_WS` changes the URL.
 - The public live node is pruned; history comes from the archive node, which rate-limits above ~2 concurrent workers.

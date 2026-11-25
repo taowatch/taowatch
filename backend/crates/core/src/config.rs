@@ -15,6 +15,10 @@ pub struct Config {
     pub rp_origin: String,
     /// Max concurrent archive workers (the public archive rate-limits above ~2).
     pub backfill_workers: usize,
+    /// Who may create accounts: `open` (anyone), `invite` (invite code), `closed`.
+    /// The very first account can always be created and becomes admin. Unset means `invite`,
+    /// so upgrading an older deployment never opens sign-up by accident.
+    pub registration: String,
 }
 
 fn var(name: &str, default: Option<&str>) -> Result<String> {
@@ -35,6 +39,10 @@ impl Config {
             rp_id: var("RP_ID", Some("localhost"))?,
             rp_origin: var("RP_ORIGIN", Some("http://localhost:8080"))?,
             backfill_workers: var("BACKFILL_WORKERS", Some("1"))?.parse().context("BACKFILL_WORKERS")?,
+            registration: match var("TAOWATCH_REGISTRATION", Some("invite"))?.as_str() {
+                r @ ("open" | "invite" | "closed") => r.to_owned(),
+                r => anyhow::bail!("TAOWATCH_REGISTRATION must be open, invite or closed (got {r})"),
+            },
         })
     }
 }

@@ -233,9 +233,9 @@ impl Chain {
     pub async fn basket_claimed_at(&self, block: u32, hotkey: &AccountId32, coldkey: &AccountId32) -> Result<u64> {
         let at = self.api.at_block(block).await?;
         let addr = dynamic::storage::<(Acc, Acc), u64>("SubtensorModule", "BasketClaimed");
-        match at.storage().fetch(addr, (hotkey.0, coldkey.0)).await {
-            Ok(v) => Ok(v.decode()?),
-            Err(_) => Ok(0),
+        match at.storage().try_fetch(addr, (hotkey.0, coldkey.0)).await? {
+            Some(v) => Ok(v.decode()?),
+            None => Ok(0),
         }
     }
 
@@ -358,6 +358,13 @@ impl Chain {
     }
 }
 
+/// True when a runtime API (or one of its methods) does not exist at this block's runtime.
+fn api_missing(msg: &str) -> bool {
+    msg.contains("not found in trait")
+        || (msg.contains("Runtime API trait") && msg.contains("not found"))
+        || msg.contains("Cannot get Runtime API info")
+}
+
 /// Wrap any subxt error with a short description of what we were reading.
 fn ctx<E>(what: &'static str) -> impl FnOnce(E) -> anyhow::Error
 where
@@ -382,9 +389,15 @@ async fn snapshot_inner(
         .decode()
         .map_err(ctx("decode Timestamp.Now"))?;
 
-    let free_rao = match at.storage().fetch(dynamic::storage::<(Acc,), AccountInfo>("System", "Account"), (ck,)).await {
-        Ok(v) => v.decode().map_err(ctx("decode System.Account"))?.data.free,
-        Err(_) => 0,
+    // A never-funded account has no System.Account entry: that is 0, other errors propagate.
+    let free_rao = match at
+        .storage()
+        .try_fetch(dynamic::storage::<(Acc,), AccountInfo>("System", "Account"), (ck,))
+        .await
+        .map_err(ctx("System.Account"))?
+    {
+        Some(v) => v.decode().map_err(ctx("decode System.Account"))?.data.free,
+        None => 0,
     };
 
     let raw: Vec<RawStakeInfo> = match at
@@ -426,23 +439,32 @@ async fn snapshot_inner(
         positions.push(Position { hotkey: AccountId32(s.hotkey), netuid: s.netuid, amount_rao: s.stake, pool });
     }
 
-    // Basket API is absent on older runtimes: not an error.
+    // Basket API is absent on older runtimes: that is `None`. Any other error (rate limit,
+    // timeout) must propagate so the caller retries instead of storing a false "no data".
     let claimable_rao: Option<u64> =
-        at.runtime_apis().call(dynamic::runtime_api_call::<_, u64>("BetaBasketRuntimeApi", "get_root_basket_owed", (ck,))).await.ok();
+        match at.runtime_apis().call(dynamic::runtime_api_call::<_, u64>("BetaBasketRuntimeApi", "get_root_basket_owed", (ck,))).await {
+            Ok(v) => Some(v),
+            Err(e) if api_missing(&e.to_string()) => None,
+            Err(e) => return Err(anyhow::Error::from(e).context("get_root_basket_owed").into()),
+        };
 
     let mut previews = Vec::new();
     let mut claimed_rao = Vec::new();
     if claimable_rao.is_some() {
         // The first basket runtime has no `get_root_basket_claim_previews`.
-        if let Ok(v) = at
+        match at
             .runtime_apis()
             .call(dynamic::runtime_api_call::<_, Vec<RawPreview>>("BetaBasketRuntimeApi", "get_root_basket_claim_previews", (ck,)))
             .await
         {
-            previews = v
-                .into_iter()
-                .map(|p| BasketPreview { hotkey: AccountId32(p.hotkey), accrued_rao: p.accrued_tao, redeemable_rao: p.redeemable_tao })
-                .collect();
+            Ok(v) => {
+                previews = v
+                    .into_iter()
+                    .map(|p| BasketPreview { hotkey: AccountId32(p.hotkey), accrued_rao: p.accrued_tao, redeemable_rao: p.redeemable_tao })
+                    .collect();
+            }
+            Err(e) if api_missing(&e.to_string()) => {}
+            Err(e) => return Err(anyhow::Error::from(e).context("get_root_basket_claim_previews").into()),
         }
         let mut hotkeys: Vec<Acc> = positions.iter().filter(|p| p.netuid == 0).map(|p| p.hotkey.0).collect();
         hotkeys.extend(previews.iter().map(|p| p.hotkey.0));
@@ -450,9 +472,9 @@ async fn snapshot_inner(
         hotkeys.dedup();
         for hk in hotkeys {
             let addr = dynamic::storage::<(Acc, Acc), u64>("SubtensorModule", "BasketClaimed");
-            let v = match at.storage().fetch(addr, (hk, ck)).await {
-                Ok(v) => v.decode().map_err(ctx("decode BasketClaimed"))?,
-                Err(_) => 0,
+            let v = match at.storage().try_fetch(addr, (hk, ck)).await.map_err(ctx("BasketClaimed"))? {
+                Some(v) => v.decode().map_err(ctx("decode BasketClaimed"))?,
+                None => 0,
             };
             claimed_rao.push((AccountId32(hk), v));
         }

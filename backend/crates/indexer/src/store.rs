@@ -27,6 +27,12 @@ pub async fn tracked_addresses(pool: &PgPool) -> Result<Vec<String>> {
     .await?)
 }
 
+/// Last block the live loop finished, to resume after a restart.
+pub async fn live_block(pool: &PgPool) -> Result<Option<u32>> {
+    let b: Option<i64> = sqlx::query_scalar("SELECT live_block FROM chain_status WHERE id = 1").fetch_one(pool).await?;
+    Ok(b.and_then(|b| u32::try_from(b).ok()))
+}
+
 pub async fn set_chain_status(pool: &PgPool, block: u32, block_ts_ms: u64) -> Result<()> {
     let lag = ((OffsetDateTime::now_utc() - ts(block_ts_ms)?).whole_seconds() / 12).max(0) as i32;
     sqlx::query("UPDATE chain_status SET live_block = $1, live_ts = $2, seen_at = now(), lag_blocks = $3 WHERE id = 1")

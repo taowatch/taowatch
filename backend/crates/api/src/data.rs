@@ -326,16 +326,17 @@ pub async fn claims(State(s): State<AppState>, user: AuthUser, Query(q): Query<R
 
 // ── daily series (portfolio, wallet history, claimable) ────────────────────
 
+/// One wallet's point for one UTC day (its latest snapshot of the day, or "now").
 #[derive(sqlx::FromRow)]
-struct DayAgg {
+struct WalletDay {
+    address: String,
     day: Date,
+    ts: Ts,
     block: i64,
     free: Decimal,
     stake: Decimal,
     claimable: Option<Decimal>,
     redeemable: Option<Decimal>,
-    /// How many of the requested wallets have a point that day.
-    n: i64,
 }
 
 #[derive(Serialize, Clone)]
@@ -358,68 +359,99 @@ pub struct DayPoint {
 }
 
 /// One point per UTC day (last snapshot of the day), summed over wallets, plus "now".
+///
+/// Wallets are snapshotted at different times of day, so `claimed` and `real_delta` are
+/// computed per wallet (claims between that wallet's previous point and this one) and then summed.
 async fn daily_series(s: &AppState, addrs: &[String], from: Ts) -> ApiResult<Vec<DayPoint>> {
-    let rows = sqlx::query_as::<_, DayAgg>(
+    let rows = sqlx::query_as::<_, WalletDay>(
         "WITH pts AS (
              SELECT DISTINCT ON (address, (ts AT TIME ZONE 'UTC')::date)
-                    address, (ts AT TIME ZONE 'UTC')::date AS day, block, free, stake, claimable, redeemable
+                    address, (ts AT TIME ZONE 'UTC')::date AS day, ts, block, free, stake, claimable, redeemable
              FROM snapshots WHERE address = ANY($1) AND ts >= $2
              ORDER BY address, (ts AT TIME ZONE 'UTC')::date, ts DESC
          ), now_pts AS (
-             SELECT address, (ts AT TIME ZONE 'UTC')::date AS day, block, free, stake, claimable, redeemable
+             SELECT address, (ts AT TIME ZONE 'UTC')::date AS day, ts, block, free, stake, claimable, redeemable
              FROM wallet_latest WHERE address = ANY($1)
-         ), merged AS (
-             SELECT * FROM pts WHERE NOT EXISTS (SELECT 1 FROM now_pts n WHERE n.address = pts.address AND n.day = pts.day)
-             UNION ALL SELECT * FROM now_pts
          )
-         SELECT day, max(block) AS block, sum(free) AS free, sum(stake) AS stake,
-                sum(claimable) AS claimable, sum(redeemable) AS redeemable, count(*) AS n
-         FROM merged GROUP BY day ORDER BY day",
+         SELECT * FROM pts WHERE NOT EXISTS (SELECT 1 FROM now_pts n WHERE n.address = pts.address AND n.day = pts.day)
+         UNION ALL SELECT * FROM now_pts
+         ORDER BY day, address",
     )
     .bind(addrs)
     .bind(from)
     .fetch_all(&s.pool)
     .await?;
 
-    let claims: Vec<(Date, Decimal)> = sqlx::query_as(
-        "SELECT (ts AT TIME ZONE 'UTC')::date AS day, sum(amount) FROM claims WHERE address = ANY($1) AND ts >= $2 GROUP BY 1",
-    )
-    .bind(addrs)
-    .bind(from - time::Duration::days(8))
-    .fetch_all(&s.pool)
-    .await?;
-    let claims: BTreeMap<Date, Decimal> = claims.into_iter().collect();
-
-    let mut out: Vec<DayPoint> = Vec::with_capacity(rows.len());
-    let mut prev: Option<&DayAgg> = None;
-    for r in &rows {
-        // Claims strictly after the previous point's day, up to and including this day.
-        let claimed: Decimal = match prev {
-            Some(p) => claims.range(p.day.next_day().unwrap_or(p.day)..=r.day).map(|(_, v)| *v).sum(),
-            None => claims.get(&r.day).copied().unwrap_or_default(),
-        };
-        let total = r.free + r.stake + r.claimable.unwrap_or_default();
-        let real_delta = match (prev.and_then(|p| p.claimable), r.claimable) {
-            (Some(a), Some(b)) => Some(b - a + claimed),
-            _ => None,
-        };
-        let change = prev.map(|p| total - (p.free + p.stake + p.claimable.unwrap_or_default()));
-        out.push(DayPoint {
-            day: day_str(r.day),
-            block: r.block,
-            free: r.free,
-            stake: r.stake,
-            claimable: r.claimable,
-            redeemable: r.redeemable,
-            total,
-            claimed,
-            real_delta,
-            change,
-            partial: (r.n as usize) < addrs.len(),
-        });
-        prev = Some(r);
+    let claim_rows: Vec<(String, Ts, Decimal)> =
+        sqlx::query_as("SELECT address, ts, amount FROM claims WHERE address = ANY($1) AND ts >= $2 ORDER BY ts")
+            .bind(addrs)
+            .bind(from - time::Duration::days(8))
+            .fetch_all(&s.pool)
+            .await?;
+    let mut claims: BTreeMap<String, Vec<(Ts, Decimal)>> = BTreeMap::new();
+    for (a, t, amt) in claim_rows {
+        claims.entry(a).or_default().push((t, amt));
     }
-    Ok(out)
+    Ok(aggregate_days(&rows, &claims, addrs.len()))
+}
+
+/// Sum per-wallet day points (sorted by day) into portfolio points.
+fn aggregate_days(rows: &[WalletDay], claims: &BTreeMap<String, Vec<(Ts, Decimal)>>, n_wallets: usize) -> Vec<DayPoint> {
+    let none: Vec<(Ts, Decimal)> = Vec::new();
+    // Each wallet's previous point: (ts, claimable).
+    let mut prev: BTreeMap<&str, (Ts, Option<Decimal>)> = BTreeMap::new();
+    let mut out: Vec<DayPoint> = Vec::new();
+    let mut prev_total: Option<Decimal> = None;
+    for day in rows.chunk_by(|a, b| a.day == b.day) {
+        let mut p = DayPoint {
+            day: day_str(day[0].day),
+            block: 0,
+            free: Decimal::ZERO,
+            stake: Decimal::ZERO,
+            claimable: None,
+            redeemable: None,
+            total: Decimal::ZERO,
+            claimed: Decimal::ZERO,
+            real_delta: None,
+            change: None,
+            partial: day.len() < n_wallets,
+        };
+        for r in day {
+            let wc = claims.get(&r.address).unwrap_or(&none);
+            // Claims between this wallet's previous point and this one, by timestamp: a point
+            // is taken at some time of day, so a claim later that day belongs to the next point.
+            let before = prev.get(r.address.as_str()).copied();
+            let after = before.map(|(t, _)| t).unwrap_or(r.ts - time::Duration::days(1));
+            let claimed = claims_between(wc, after, r.ts);
+            if let (Some((_, Some(a))), Some(b)) = (before, r.claimable) {
+                p.real_delta = Some(p.real_delta.unwrap_or_default() + b - a + claimed);
+            }
+            p.block = p.block.max(r.block);
+            p.free += r.free;
+            p.stake += r.stake;
+            p.claimable = add_opt(p.claimable, r.claimable);
+            p.redeemable = add_opt(p.redeemable, r.redeemable);
+            p.claimed += claimed;
+            prev.insert(r.address.as_str(), (r.ts, r.claimable));
+        }
+        p.total = p.free + p.stake + p.claimable.unwrap_or_default();
+        p.change = prev_total.map(|t| p.total - t);
+        prev_total = Some(p.total);
+        out.push(p);
+    }
+    out
+}
+
+fn add_opt(a: Option<Decimal>, b: Option<Decimal>) -> Option<Decimal> {
+    match (a, b) {
+        (None, None) => None,
+        _ => Some(a.unwrap_or_default() + b.unwrap_or_default()),
+    }
+}
+
+/// Sum of claims with `after < ts <= upto`.
+fn claims_between(claims: &[(Ts, Decimal)], after: Ts, upto: Ts) -> Decimal {
+    claims.iter().filter(|(t, _)| *t > after && *t <= upto).map(|(_, a)| *a).sum()
 }
 
 fn series_csv(name: &str, pts: &[DayPoint]) -> Response {
@@ -683,4 +715,88 @@ pub async fn chain_status(State(s): State<AppState>) -> ApiResult<Json<ChainStat
             .fetch_one(&s.pool)
             .await?,
     ))
+}
+
+// ── TAO price (public) ─────────────────────────────────────────────────────
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Price {
+    usd: Decimal,
+    change_24h: Option<Decimal>,
+    #[serde(with = "time::serde::rfc3339")]
+    ts: Ts,
+    /// The newest stored sample is older than two store intervals: the price feed is down.
+    stale: bool,
+}
+
+pub async fn price(State(s): State<AppState>) -> ApiResult<Json<Option<Price>>> {
+    Ok(Json(
+        sqlx::query_as::<_, Price>(
+            "SELECT tao_usd AS usd, change_24h, ts, ts < now() - interval '35 minutes' AS stale
+             FROM prices ORDER BY ts DESC LIMIT 1",
+        )
+        .fetch_optional(&s.pool)
+        .await?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    #[test]
+    fn claims_land_between_snapshots_not_calendar_days() {
+        // Real case: daily points taken ~06:00 UTC, claims on 2026-11-18 at 11:34 and 11:35.
+        let claims = vec![
+            (datetime!(2026-11-18 11:34:12 UTC), Decimal::new(14874478774, 9)),
+            (datetime!(2026-11-18 11:35:00 UTC), Decimal::new(9951774119, 9)),
+        ];
+        let p18 = datetime!(2026-11-18 06:00:00 UTC);
+        let p19 = datetime!(2026-11-19 06:00:00 UTC);
+        assert_eq!(claims_between(&claims, p18 - time::Duration::days(1), p18), Decimal::ZERO);
+        assert_eq!(claims_between(&claims, p18, p19), Decimal::new(24826252893, 9));
+        // Boundaries: exclusive start, inclusive end.
+        assert_eq!(
+            claims_between(&claims, datetime!(2026-11-18 11:34:12 UTC), datetime!(2026-11-18 11:35:00 UTC)),
+            Decimal::new(9951774119, 9)
+        );
+    }
+
+    fn wd(address: &str, ts: Ts, claimable: Decimal) -> WalletDay {
+        WalletDay {
+            address: address.into(),
+            day: ts.date(),
+            ts,
+            block: 0,
+            free: Decimal::ZERO,
+            stake: Decimal::ZERO,
+            claimable: Some(claimable),
+            redeemable: None,
+        }
+    }
+
+    #[test]
+    fn real_delta_uses_each_wallets_own_snapshot_time() {
+        // A is snapshotted at 06:00, B at 23:00. A claims 10 τ on day 2 at 12:00, after its
+        // day-2 point: that claim belongs to A's day-3 point, not to day 2.
+        let rows = vec![
+            wd("A", datetime!(2026-11-01 06:00 UTC), Decimal::new(10, 0)),
+            wd("B", datetime!(2026-11-01 23:00 UTC), Decimal::new(5, 0)),
+            wd("A", datetime!(2026-11-02 06:00 UTC), Decimal::new(11, 0)),
+            wd("B", datetime!(2026-11-02 23:00 UTC), Decimal::new(6, 0)),
+            wd("A", datetime!(2026-11-03 06:00 UTC), Decimal::new(2, 0)),
+            wd("B", datetime!(2026-11-03 23:00 UTC), Decimal::new(7, 0)),
+        ];
+        let mut claims = BTreeMap::new();
+        claims.insert("A".to_string(), vec![(datetime!(2026-11-02 12:00 UTC), Decimal::new(10, 0))]);
+        let pts = aggregate_days(&rows, &claims, 2);
+        assert_eq!(pts.len(), 3);
+        assert_eq!(pts[0].real_delta, None);
+        // Day 2: A +1, B +1, no claim yet for A.
+        assert_eq!((pts[1].claimed, pts[1].real_delta), (Decimal::ZERO, Some(Decimal::new(2, 0))));
+        // Day 3: A 11 → 2 with a 10 τ claim = +1; B +1.
+        assert_eq!((pts[2].claimed, pts[2].real_delta), (Decimal::new(10, 0), Some(Decimal::new(2, 0))));
+        assert!(!pts[2].partial);
+    }
 }
