@@ -7,70 +7,39 @@ Self-hosted, **read-only** tracker for Bittensor wallets: free / stake / claimab
 backend/   Rust workspace — crates/core (config, db, chain), crates/api (axum + WebSocket), crates/indexer (subxt)
            migrations/ (sqlx, TimescaleDB) · metadata/finney.scale (pinned runtime metadata v15) · Dockerfile
 web/       React 19 + Vite 8 + TypeScript 7 + Chart.js · Caddyfile · Dockerfile (build → Caddy)
-.github/   ci.yml (checks) · images.yml (build & publish Docker images to GHCR)
+.github/   ci.yml (checks) · images.yml (publish Docker images)
 ```
 
-## Images
-
-GitHub Actions publishes two multi-arch (amd64 + arm64) images to GitHub Container Registry:
-
-| image | contains | used by compose service |
-|---|---|---|
-| `ghcr.io/<owner>/taowatch-backend` | `api` and `indexer` binaries | `api` (`api`), `indexer` (`indexer run`) |
-| `ghcr.io/<owner>/taowatch-web` | Caddy + built SPA, HTTPS, reverse proxy | `web` |
-
-Tags: `latest` (main branch) · `sha-<short>` (every build) · `1.2.3` and `1.2` (when you push tag `v1.2.3`).
-
-## CI/CD
-
-| workflow | runs on | does |
-|---|---|---|
-| `ci.yml` | every push to `main`, every pull request | `cargo fmt --check`, `clippy -D warnings`, `cargo test`; web `typecheck` + `build`; `docker compose config` |
-| `images.yml` | push to `main`, tags `v*`, manual run | builds both images natively on `ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64), pushes by digest, merges multi-arch manifests |
-
-### First-time GitHub setup
-
-1. Create the repository and push:
-   ```sh
-   git add -A && git commit -m "Initial TaoWatch"
-   git remote add origin git@github.com:<owner>/<repo>.git
-   git push -u origin main
-   ```
-2. Nothing else is required for publishing: `images.yml` logs in to GHCR with the built-in `GITHUB_TOKEN`
-   (`packages: write`). After the first run the packages appear under your profile → **Packages**.
-3. Packages are **private** by default. Either make them public (package → Package settings → Change visibility),
-   or log in on the server with a token that has `read:packages`:
-   ```sh
-   echo <token> | docker login ghcr.io -u <github-user> --password-stdin
-   ```
-4. The arm64 jobs use GitHub-hosted `ubuntu-24.04-arm` runners. If your plan does not offer them for this repository,
-   remove `arm64` from the `arch` matrix in `images.yml`.
-5. Release: `git tag v0.1.0 && git push origin v0.1.0` → images tagged `0.1.0` and `0.1`.
-
-## Deploy (server)
+## Deploy
 
 Needs Docker with Compose v2, a domain pointing to the server, and ports 80/443 open (Caddy obtains the certificate).
+Only `docker-compose.yml` and `.env` are needed on the server; the images are pulled from GitHub Container Registry.
 
 ```sh
-# on the server: only docker-compose.yml and .env are needed
-cp .env.example .env
-#   TAOWATCH_IMAGE_PREFIX=ghcr.io/<owner>/taowatch     (lower case)
-#   TAOWATCH_TAG=latest                                 (or 0.1.0 to pin a release)
+curl -fsSLO https://raw.githubusercontent.com/taowatch/taowatch/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/taowatch/taowatch/main/.env.example -o .env
+# edit .env:
 #   DOMAIN=taowatch.example.com
 #   RP_ID=taowatch.example.com
 #   RP_ORIGIN=https://taowatch.example.com
-#   POSTGRES_PASSWORD=…  and the same password inside DATABASE_URL
+#   POSTGRES_PASSWORD=…  (and the same password inside DATABASE_URL)
+#   TAOWATCH_TAG=latest   (or a release such as 0.1.0)
 docker compose pull
 docker compose up -d
 docker compose logs -f api indexer
 ```
 
-Update to a new build: `docker compose pull && docker compose up -d`. The API applies database migrations on start.
+Update: `docker compose pull && docker compose up -d`. The API applies database migrations on start.
 
 The first user to register becomes **admin** and can create invite codes for others (Settings → Users & invites).
 Passkeys need HTTPS on the real domain; `RP_ID` must equal the domain users open.
 
-Build the images locally instead of pulling: `docker compose up -d --build`.
+## CI/CD
+
+- `ci.yml` — on every push to `main` and every pull request: `cargo fmt --check`, `clippy -D warnings`,
+  `cargo test`; web `npm ci`, `typecheck`, `build`; `docker compose config`.
+- `images.yml` — on push to `main`, on tags `v*`, or run manually: builds and publishes the images used by
+  `docker-compose.yml`. Release with `git tag v0.1.0 && git push origin v0.1.0`.
 
 ## Develop on the host
 

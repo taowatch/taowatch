@@ -1,13 +1,10 @@
 name: taowatch
 
-# Images are built by GitHub Actions (.github/workflows/images.yml) and pulled from GHCR:
-#   ${TAOWATCH_IMAGE_PREFIX}-backend:${TAOWATCH_TAG}   (api + indexer)
-#   ${TAOWATCH_IMAGE_PREFIX}-web:${TAOWATCH_TAG}       (Caddy + SPA)
-# `docker compose up -d` pulls them; `docker compose up -d --build` builds locally instead.
+# Images are published to GHCR by .github/workflows/images.yml.
+# TAOWATCH_TAG: latest (main) · sha-<short> (one commit) · 0.1.0 (release tag v0.1.0)
 
 x-backend: &backend
-  image: ${TAOWATCH_IMAGE_PREFIX:?set TAOWATCH_IMAGE_PREFIX in .env, e.g. ghcr.io/<github-user>/taowatch}-backend:${TAOWATCH_TAG:-latest}
-  build: { context: ./backend }
+  image: ghcr.io/taowatch/taowatch-backend:${TAOWATCH_TAG:-latest}
   env_file: .env
   restart: unless-stopped
 
@@ -45,8 +42,7 @@ services:
       api: { condition: service_healthy }   # api applies the migrations first
 
   web:
-    image: ${TAOWATCH_IMAGE_PREFIX}-web:${TAOWATCH_TAG:-latest}
-    build: { context: ./web }
+    image: ghcr.io/taowatch/taowatch-web:${TAOWATCH_TAG:-latest}
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     ports:

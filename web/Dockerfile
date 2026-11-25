@@ -2,7 +2,7 @@
 FROM node:26.13.1-trixie AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci || npm install
+RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
