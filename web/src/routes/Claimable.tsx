@@ -8,6 +8,7 @@ import { ClaimableChart, ValidatorChart } from '../components/charts';
 import { DayTable } from './Dashboard';
 import { Empty, ErrorBox, KeyBar, Kpi, Loading, Page, Panel, Seg } from '../components/ui';
 import { useKeys } from '../lib/hotkeys';
+import { claimRate, project } from '../lib/estimate';
 
 type R = '7d' | '30d' | 'all';
 const RS: R[] = ['7d', '30d', 'all'];
@@ -20,6 +21,8 @@ export function Claimable() {
   const wallets = useQuery({ queryKey: ['wallets'], queryFn: () => getJson<WalletRow[]>('/api/wallets') });
   const summary = useQuery({ queryKey: ['summary'], queryFn: () => getJson<Summary>('/api/portfolio/summary') });
   const c = useQuery({ queryKey: ['claimable', wallet, range], queryFn: () => getJson<ClaimableResponse>(`/api/claimable?wallet=${wallet}&range=${range}`) });
+  // The estimate always looks at the last 30 days, whatever range is on screen.
+  const recent = useQuery({ queryKey: ['claimable', wallet, '30d'], queryFn: () => getJson<ClaimableResponse>(`/api/claimable?wallet=${wallet}&range=30d`) });
   const claims = useQuery({ queryKey: ['claims', wallet], queryFn: () => getJson<ClaimRow[]>(`/api/claims?wallet=${wallet}&range=all`) });
 
   const cycle = () => setRange(RS[(RS.indexOf(range) + 1) % RS.length] ?? 'all');
@@ -42,6 +45,13 @@ export function Claimable() {
   const first = days[0]?.day;
   const inRange = (claims.data ?? []).filter((x) => !first || x.ts.slice(0, 10) >= first);
   const claimedInRange = inRange.reduce((a, x) => a + (num(x.amount) ?? 0), 0);
+  const rate7 = claimRate(recent.data?.days ?? [], 7);
+  const rate30 = claimRate(recent.data?.days ?? [], 30);
+  const rate = rate7 ?? rate30;
+  const sRate = signed(rate?.perDay, 4, ' τ/d');
+  const sRate30 = signed(rate30?.perDay, 4, ' τ/d');
+  const in7 = project(now.cl, rate, 7);
+  const in30 = project(now.cl, rate, 30);
   const s1 = signed(d1);
   const s7 = signed(last7);
   const sAvg = signed(avg);
@@ -74,6 +84,20 @@ export function Claimable() {
       >
         <section className="kpis" aria-label="Claimable summary">
           <Kpi label="CLAIMABLE NOW" labelTone="claimable" tone="claimable" value={tao(now.cl, 4)} sub={<>you receive {tao(now.rd, 4)} · dust {tao(num(now.cl) !== null && num(now.rd) !== null ? (num(now.cl) ?? 0) - (num(now.rd) ?? 0) : null, 4)}</>} />
+          <Kpi
+            label="ESTIMATE"
+            tone={sRate.tone}
+            value={sRate.text}
+            sub={
+              rate ? (
+                <>
+                  in 7 d ≈ {tao(in7, 3)} · in 30 d ≈ {tao(in30, 3)}
+                  <br />
+                  {Math.round(rate.days)}-day avg{rate30 && rate !== rate30 ? <> · 30-day <span className={sRate30.tone}>{sRate30.text}</span></> : null}
+                </>
+              ) : recent.isPending ? 'loading…' : 'needs a few days of history'
+            }
+          />
           <Kpi label="LAST DAY (REAL Δ)" value={<span className={s1.tone}>{s1.text}</span>} sub={`${pct(d1pct)}${prev ? ` · since ${prev.day}` : ''}`} />
           <Kpi label="LAST 7 POINTS" value={<span className={s7.tone}>{s7.text}</span>} sub={<>avg <span className={sAvg.tone}>{sAvg.text}</span> / day in range</>} />
           <Kpi label="UP / DOWN DAYS" value={<><span className="up">▲ {up}</span> <span className="dim">/</span> <span className="down">▼ {down}</span></>} sub={worst ? <>worst <span className={sW.tone}>{sW.text}</span> on {worst.day}</> : '—'} />
@@ -91,9 +115,10 @@ export function Claimable() {
             <Empty>No claimable history yet. It starts at the basket launch, or when history finishes loading.</Empty>
           ) : view === 'chart' ? <ClaimableChart days={days} /> : <DayTable days={days} claimable />}
           <details className="explain">
-            <summary>How is “real Δ” calculated, and why can claimable go down?</summary>
+            <summary>How are “real Δ” and the estimate calculated, and why can claimable go down?</summary>
             <p><span className="strong">Real Δ = claimable today − claimable yesterday + TAO claimed in between.</span> Adding the claim back means a claim day is not counted as a drop.</p>
             <p>Claimable is what you would receive if you redeemed your root baskets now. A basket holds alpha from many subnets valued at current pool prices, so claimable falls when those prices fall even if nothing was taken out.</p>
+            <p><span className="strong">Estimate</span> = average real Δ per day over the last 7 days (30 days in the sub-line), projected forward from claimable now. It assumes the next weeks look like the last ones: subnet price moves and changes to your stake will make the real number differ.</p>
             <p className="dim">Source: BetaBasketRuntimeApi (get_root_basket_owed, get_root_basket_claim_previews); claims from BasketClaimed events. <a href={`/api/claimable?wallet=${wallet}&range=${range}&format=csv`}>download CSV</a></p>
           </details>
         </Panel>
@@ -104,7 +129,7 @@ export function Claimable() {
               <ValidatorChart labels={labels} series={series} />
               <div className="scroll-x">
                 <table className="tbl">
-                  <thead><tr><th>VALIDATOR</th><th className="r">CLAIMABLE</th><th className="r">7-POINT REAL Δ</th><th className="r">CLAIMED</th><th>LAST CLAIM</th></tr></thead>
+                  <thead><tr><th>VALIDATOR</th><th className="r">CLAIMABLE</th><th className="r">7-POINT REAL Δ</th><th className="r hide-m">CLAIMED</th><th className="hide-m">LAST CLAIM</th></tr></thead>
                   <tbody>
                     {series.map((s) => {
                       const vals = s.values.filter((v): v is number => v !== null);
@@ -120,8 +145,8 @@ export function Claimable() {
                           <td>{s.label ? <>{s.label} <span className="dim">{short(s.hotkey)}</span></> : short(s.hotkey)}</td>
                           <td className="r claimable">{tao(lastV, 4)}</td>
                           <td className={`r ${d7.tone}`}>{d7.text}</td>
-                          <td className="r">{tao(mine.reduce((a, x) => a + (num(x.amount) ?? 0), 0), 4)}</td>
-                          <td>{mine[0] ? <>{utc(mine[0].ts)} <span className="dim">+{fmt(mine[0].amount, 4)} τ · {block(mine[0].block)}</span></> : 'never'}</td>
+                          <td className="r hide-m">{tao(mine.reduce((a, x) => a + (num(x.amount) ?? 0), 0), 4)}</td>
+                          <td className="hide-m">{mine[0] ? <>{utc(mine[0].ts)} <span className="dim">+{fmt(mine[0].amount, 4)} τ · {block(mine[0].block)}</span></> : 'never'}</td>
                         </tr>
                       );
                     })}

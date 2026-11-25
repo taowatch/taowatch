@@ -151,16 +151,16 @@ export function WalletDetail() {
           <Panel title="Stake positions" right={<Link to={`/wallets/${w.address}/positions`}>all {positions.length} positions ›</Link>}>
             <div className="scroll-x">
               <table className="tbl">
-                <thead><tr><th>VALIDATOR</th><th className="r">SUBNET</th><th className="r">VALUE</th><th>SHARE</th><th className="r">CLAIMABLE</th></tr></thead>
+                <thead><tr><th>VALIDATOR</th><th className="r hide-m">SUBNET</th><th className="r">VALUE</th><th className="hide-m">SHARE</th><th className="r">CLAIMABLE</th></tr></thead>
                 <tbody>
                   {positions.slice(0, 5).map((p) => {
                     const share = ((num(p.value_tao) ?? 0) / stakeSum) * 100;
                     return (
                       <tr key={`${p.hotkey}-${p.netuid}`}>
                         <td>{p.label ?? short(p.hotkey)}</td>
-                        <td className="r">SN{p.netuid}{p.netuid === 0 ? ' root' : ''}</td>
+                        <td className="r hide-m">SN{p.netuid}{p.netuid === 0 ? ' root' : ''}</td>
                         <td className="r stake">{tao(p.value_tao)}</td>
-                        <td><span aria-hidden="true" className="stake bars">{bar(share)}</span> {share.toFixed(1)}%</td>
+                        <td className="hide-m"><span aria-hidden="true" className="stake bars">{bar(share)}</span> {share.toFixed(1)}%</td>
                         <td className="r claimable">{tao(p.accrued, 4)}</td>
                       </tr>
                     );

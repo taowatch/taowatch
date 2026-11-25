@@ -72,7 +72,7 @@ export function Activity() {
         <Panel>
           {pending ? <Loading /> : error ? <ErrorBox error={error} /> : items.length === 0 ? <p className="dim m0">No events of this type yet.</p> : (
             <div className="scroll-x">
-              <table className="tbl">
+              <table className="tbl tbl-line">
                 <thead><tr><th>WHEN (UTC)</th><th>TYPE</th><th>WALLET</th><th>DETAIL</th><th className="r">AMOUNT</th><th>SOURCE</th></tr></thead>
                 <tbody>
                   {items.map((i) => (
@@ -80,9 +80,9 @@ export function Activity() {
                       <td className="dim">{utc(i.ts).replace(' UTC', '')}</td>
                       <td className={`strong ${i.tone}`}>{KIND[i.kind]?.[0] ?? i.kind}</td>
                       <td>{label(i.address)}</td>
-                      <td>{i.detail}</td>
+                      <td className="line-2">{i.detail}</td>
                       <td className={`r ${i.amount === null ? 'dim' : i.amount >= 0 ? 'up' : 'down'}`}>{i.amount === null ? '' : `${i.amount >= 0 ? '+' : '−'}${fmt(Math.abs(i.amount), 4)} τ`}</td>
-                      <td className="dim">{i.source}</td>
+                      <td className="dim hide-m">{i.source}</td>
                     </tr>
                   ))}
                 </tbody>

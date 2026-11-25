@@ -7,7 +7,7 @@ import type { WalletDetail, WalletRow } from '../lib/types';
 import { ErrorBox, Page, Panel } from '../components/ui';
 
 const PLANS = [
-  ['rec', 'Recommended — daily for 120 days, weekly back to dTAO (Feb 2025)', '~200 archive reads · roughly 1–2 hours in the background'],
+  ['rec', 'Recommended — daily for 120 days, weekly back to dTAO (Feb 2025)', '~200 archive reads · about 10–20 minutes in the background'],
   ['short', 'Last 30 days only', '~31 archive reads · a few minutes'],
   ['none', 'No history — start from now', 'charts fill in as new blocks arrive'],
 ] as const;

@@ -183,7 +183,7 @@ export function Settings() {
               </p>
             )}
             <div className="scroll-x">
-              <table className="tbl">
+              <table className="tbl tbl-line">
                 <thead><tr><th>INVITE</th><th>STATUS</th><th>EXPIRES</th><th /></tr></thead>
                 <tbody>
                   {(invites.data ?? []).map((i) => {

@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { getJson } from '../lib/api';
 import { ago, block, fmt, num, RANGES, short, signed, tao, utc, type Range } from '../lib/format';
-import type { ClaimRow, DayPoint, Summary, WalletRow } from '../lib/types';
+import type { ClaimableResponse, ClaimRow, DayPoint, Summary, WalletRow } from '../lib/types';
+import { claimRate } from '../lib/estimate';
 import { BalanceChart } from '../components/charts';
 import { Empty, ErrorBox, KeyBar, Kpi, Loading, Page, Panel, Seg } from '../components/ui';
 import { useKeys } from '../lib/hotkeys';
@@ -15,6 +16,7 @@ export function Dashboard() {
   const summary = useQuery({ queryKey: ['summary'], queryFn: () => getJson<Summary>('/api/portfolio/summary') });
   const wallets = useQuery({ queryKey: ['wallets'], queryFn: () => getJson<WalletRow[]>('/api/wallets') });
   const history = useQuery({ queryKey: ['portfolio-history', range], queryFn: () => getJson<DayPoint[]>(`/api/portfolio/history?range=${range}`) });
+  const recent = useQuery({ queryKey: ['claimable', 'all', '30d'], queryFn: () => getJson<ClaimableResponse>('/api/claimable?wallet=all&range=30d') });
   const claims = useQuery({ queryKey: ['claims', 'all'], queryFn: () => getJson<ClaimRow[]>('/api/claims?range=all') });
 
   const cycle = () => setRange(RANGES[(RANGES.indexOf(range) + 1) % RANGES.length] ?? '90d');
@@ -45,6 +47,8 @@ export function Dashboard() {
   const period = days.length > 1 ? Number(days[days.length - 1]!.total) - Number(days[0]!.total) : null;
   const pr = signed(period, 3);
   const dust = num(s.claimable) !== null && num(s.redeemable) !== null ? (num(s.claimable) ?? 0) - (num(s.redeemable) ?? 0) : null;
+  const rate = claimRate(recent.data?.days ?? [], 7) ?? claimRate(recent.data?.days ?? [], 30);
+  const sRate = signed(rate?.perDay, 4, ' τ/d');
   const syncing = wallets.data.filter((w) => w.history_status === 'running' || w.history_status === 'pending');
   const labelOf = (a: string) => wallets.data.find((w) => w.address === a)?.label ?? short(a);
 
@@ -74,6 +78,12 @@ export function Dashboard() {
                 you receive {tao(s.redeemable, 4)} · dust {tao(dust, 4)}
                 <br />
                 <span className={c24.tone}>{c24.text}</span> real Δ 24h
+                {rate && (
+                  <>
+                    <br />
+                    est. <span className={sRate.tone}>{sRate.text}</span> ({Math.round(rate.days)}-day avg)
+                  </>
+                )}
               </>
             }
           />
@@ -114,7 +124,7 @@ export function Dashboard() {
         <div className="split">
           <Panel title={`Wallets (${wallets.data.length})`} right={<Link to="/onboarding">+ add</Link>}>
             <div className="scroll-x">
-              <table className="tbl">
+              <table className="tbl tbl-kv">
                 <thead>
                   <tr>
                     <th>WALLET</th>
@@ -141,15 +151,15 @@ export function Dashboard() {
                             {w.history_status === 'running' || w.history_status === 'pending' ? <span className="info"> · syncing {w.history_progress}%</span> : null}
                           </div>
                         </td>
-                        <td className="r">{tao(w.free, 4)}</td>
-                        <td className="r stake">{tao(w.stake)}</td>
-                        <td className="r claimable">{tao(w.claimable, 4)}</td>
-                        <td>
+                        <td className="r" data-l="free">{tao(w.free, 4)}</td>
+                        <td className="r stake" data-l="stake">{tao(w.stake)}</td>
+                        <td className="r claimable" data-l="claimable">{tao(w.claimable, 4)}</td>
+                        <td data-l="last claim">
                           {w.last_claim_at ? utc(w.last_claim_at).slice(0, 10) : 'never'}
                           <div className="dim small">{w.last_claim_at ? ago(w.last_claim_at) : ''}</div>
                         </td>
-                        <td className="r strong">{tao(total)}</td>
-                        <td className={`r ${ch.tone}`}>{ch.text}</td>
+                        <td className="r strong" data-l="total">{tao(total)}</td>
+                        <td className={`r ${ch.tone}`} data-l="24h">{ch.text}</td>
                       </tr>
                     );
                   })}

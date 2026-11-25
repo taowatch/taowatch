@@ -34,7 +34,7 @@ export function Help() {
         <div className="split">
           <Panel title="Keyboard">
             <p className="dim m0">Single letters, like htop or vim. Disabled while you type. Each key means the same thing on every page; the footer buttons do the same for mouse and touch.</p>
-            <table className="tbl">
+            <table className="tbl tbl-wrap">
               <tbody>{KEYS.map(([k, d]) => <tr key={k}><td className="nowrap"><kbd>{k}</kbd></td><td>{d}</td></tr>)}</tbody>
             </table>
           </Panel>

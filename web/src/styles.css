@@ -46,6 +46,19 @@ button, input, select { font: inherit; color: inherit; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+/* ── top bar ───────────────────────────────────────────────────────────── */
+.top { background: var(--bg-raised); border-bottom: 1px solid var(--line); }
+.top-in { max-width: 1400px; margin: 0 auto; padding: 6px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }
+.brand { color: var(--accent); font-weight: 700; text-decoration: none; }
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+.tab { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 10px; text-decoration: none; color: var(--text); }
+.tab:hover { background: #1b2a20; }
+.tab-key { margin-right: 1ch; }
+.tab.active { background: var(--accent); color: var(--bg); font-weight: 700; }
+.top-stale { display: inline-flex; gap: 8px; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid; }
+.top-price { margin-left: auto; white-space: nowrap; }
+.top-user { display: inline-flex; align-items: center; gap: 10px; }
+
 /* ── controls ─────────────────────────────────────────────────────────── */
 .btn, .btn-primary, .seg button {
   min-height: 44px; padding: 0 14px; cursor: pointer; font-weight: 700;
@@ -154,6 +167,8 @@ fieldset.plain legend { padding: 0; margin-bottom: 6px; }
 .tbl th { text-align: left; font-weight: 400; color: var(--text-dim); padding: 6px 10px; position: sticky; top: 0; background: var(--bg-raised); }
 .tbl th.r { text-align: right; }
 .tbl td { padding: 6px 10px; border-top: 1px solid #1e2b22; }
+.tbl-wrap td { white-space: normal; }
+.ctl { align-items: center; flex-wrap: nowrap; }
 .tbl tr:hover td { background: var(--row-hover); }
 .tbl tr.click { cursor: pointer; }
 .tbl tr.selected td { background: #16241b; }
@@ -204,8 +219,42 @@ fieldset.plain legend { padding: 0; margin-bottom: 6px; }
 .key:hover { background: #1b2a20; }
 
 @media (max-width: 640px) {
+  /* Top bar: brand + price on one line, then all six tabs in a 3 × 2 grid. Sign out lives in Settings › Session. */
+  .top-in { display: grid; grid-template-columns: auto 1fr; padding: 8px 14px; gap: 8px 12px; }
+  .top-price { grid-column: 2; grid-row: 1; justify-self: end; font-size: 13px; }
+  .top-stale { grid-column: 1 / -1; justify-content: center; min-height: 32px; font-size: 13px; }
+  .tabs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid var(--line); }
+  .tab { min-height: 40px; padding: 0 4px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .tab:nth-child(3n) { border-right: 0; }
+  .tab:nth-child(n + 4) { border-bottom: 0; }
+  .tab-key, .top-user { display: none; }
   .keybar { display: none; }
   .page { padding: 14px; }
+  /* Shortcut hints mean nothing on touch screens. */
+  .btn kbd, .btn-link kbd { display: none; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .kpi { padding: 10px 12px; min-width: 0; }
+  .kpi-value { font-size: 18px; overflow-wrap: anywhere; }
+  .hide-m { display: none; }
+  .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .ctl { width: 100%; }
+  .ctl > .dim { width: 48px; flex: none; }
+  .ctl-row { width: 100%; align-items: center; }
+  .ctl-row .filter { flex: 1 1 200px; }
+  .tbl td, .tbl th { padding: 6px 8px; }
+  /* tbl-kv: each row becomes a small card of label/value lines. */
+  .tbl-kv thead { display: none; }
+  .tbl-kv tr { display: flex; flex-direction: column; padding: 10px 0; border-top: 1px solid var(--line); }
+  .tbl-kv td { border: 0; padding: 2px 0; }
+  .tbl-kv td[data-l] { display: flex; justify-content: space-between; gap: 12px; text-align: right; }
+  .tbl-kv td[data-l]::before { content: attr(data-l); color: var(--text-dim); text-align: left; }
+  .tbl-kv td[data-l] > div { display: none; }
+  /* tbl-line: cells flow on one line, numbers pushed right, .line-2 on its own line. */
+  .tbl-line thead { display: none; }
+  .tbl-line tr { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .tbl-line td { border: 0; padding: 0; }
+  .tbl-line td.r { margin-left: auto; }
+  .tbl-line td.line-2 { order: 9; flex-basis: 100%; white-space: normal; color: var(--text-dim); }
   .kv { grid-template-columns: 1fr; }
   .filter input { width: 100%; }
 }

@@ -89,12 +89,12 @@ export function Positions() {
 
         <div className="toolbar">
           <div className="row">
-            <span className="dim">group</span>
-            <Seg label="Group by" options={['subnet', 'validator', 'none'] as const} value={group} onChange={(g) => { setGroup(g); setClosed({}); }} />
-            <span className="dim">sort</span>
-            <Seg label="Sort by" options={[['value', 'value'], ['claimable', 'claimable']] as const} value={sort} onChange={setSort} />
+            <span className="row ctl"><span className="dim">group</span>
+            <Seg label="Group by" options={['subnet', 'validator', 'none'] as const} value={group} onChange={(g) => { setGroup(g); setClosed({}); }} /></span>
+            <span className="row ctl"><span className="dim">sort</span>
+            <Seg label="Sort by" options={[['value', 'value'], ['claimable', 'claimable']] as const} value={sort} onChange={setSort} /></span>
           </div>
-          <div className="row">
+          <div className="row ctl-row">
             <label className="check"><input type="checkbox" checked={hideDust} onChange={() => setHideDust(!hideDust)} /> hide dust &lt; 0.05 τ</label>
             <label className="filter">
               <span aria-hidden="true">/</span>
@@ -108,20 +108,21 @@ export function Positions() {
           <Panel title={`${list.length} position${list.length === 1 ? '' : 's'}${positions.length - list.length ? ` (${positions.length - list.length} hidden by filters)` : ''}`}>
             <div className="scroll-x">
               <table className="tbl">
-                <thead><tr><th>{group === 'subnet' ? 'VALIDATOR' : group === 'validator' ? 'SUBNET' : 'POSITION'}</th><th className="r">AMOUNT</th><th className="r">VALUE</th><th>SHARE</th><th className="r">CLAIMABLE</th></tr></thead>
+                <thead><tr><th>{group === 'subnet' ? 'VALIDATOR' : group === 'validator' ? 'SUBNET' : 'POSITION'}</th><th className="r hide-m">AMOUNT</th><th className="r">VALUE</th><th className="hide-m">SHARE</th><th className="r">CLAIMABLE</th></tr></thead>
                 <tbody>
                   {sorted.map(({ g, ps, v }) => {
                     const open = !closed[g];
                     const share = (v / total) * 100;
                     return [
                       <tr key={`g-${g}`} className="group-row">
-                        <td colSpan={2}>
+                        <td>
                           <button type="button" className="plain-btn" aria-expanded={open} onClick={() => setClosed({ ...closed, [g]: open })}>
                             <span className="dim">{open ? '▾' : '▸'}</span> <span className="strong">{g}</span> <span className="dim">{ps.length} pos</span>
                           </button>
                         </td>
+                        <td className="hide-m" />
                         <td className="r strong">{tao(v)}</td>
-                        <td><span aria-hidden="true" className="bars">{bar(share)}</span> {share.toFixed(1)}%</td>
+                        <td className="hide-m"><span aria-hidden="true" className="bars">{bar(share)}</span> {share.toFixed(1)}%</td>
                         <td className="r claimable">{tao(ps.reduce((a, p) => a + (num(p.accrued) ?? 0), 0) || null, 4)}</td>
                       </tr>,
                       ...(open
@@ -131,12 +132,12 @@ export function Positions() {
                               <tr key={key(p)} className={selected && key(selected) === key(p) ? 'selected' : ''}>
                                 <td className="indent">
                                   <button type="button" className="plain-btn" onClick={() => setSel(key(p))}>
-                                    {group === 'validator' ? `SN${p.netuid}` : vname(p)} <span className="dim">{group === 'validator' ? '' : short(p.hotkey)}</span>
+                                    {group === 'validator' ? `SN${p.netuid}` : vname(p)} {group !== 'validator' && p.label ? <span className="dim">{short(p.hotkey)}</span> : null}
                                   </button>
                                 </td>
-                                <td className="r">{p.netuid === 0 ? tao(p.amount) : `${Number(p.amount).toFixed(2)} α`}</td>
+                                <td className="r hide-m">{p.netuid === 0 ? tao(p.amount) : `${Number(p.amount).toFixed(2)} α`}</td>
                                 <td className="r">{tao(p.value_tao)}</td>
-                                <td><span aria-hidden="true" className="bars" style={{ color: color(p.netuid) }}>{bar(s)}</span> {s < 0.01 ? '<0.01' : s.toFixed(2)}%</td>
+                                <td className="hide-m"><span aria-hidden="true" className="bars" style={{ color: color(p.netuid) }}>{bar(s)}</span> {s < 0.01 ? '<0.01' : s.toFixed(2)}%</td>
                                 <td className="r claimable">{tao(p.accrued, 4)}</td>
                               </tr>
                             );
