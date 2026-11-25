@@ -1,6 +1,6 @@
 //! Subtensor chain client.
 //!
-//! Verified against finney (spike 2026-11-25, see PLAN.md §2):
+//! Verified against finney mainnet (November 2026):
 //! - subxt 0.51 defaults to the `chainHead_v1` RPCs, which Subtensor nodes reject
 //!   with "Method not found" → we always use [`LegacyBackend`].
 //! - Stake comes from `StakeInfoRuntimeApi` (storage `AlphaV2` holds pool *shares*).

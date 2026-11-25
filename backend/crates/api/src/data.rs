@@ -1,4 +1,4 @@
-//! Read/write endpoints for wallets, portfolio, claimable and activity. PLAN.md §6.
+//! Read/write endpoints for wallets, portfolio, claimable and activity.
 //! Amounts are `Decimal` serialized as strings; dates are UTC `YYYY-MM-DD`.
 
 use std::collections::BTreeMap;
@@ -349,7 +349,7 @@ pub struct DayPoint {
     total: Decimal,
     /// Sum of confirmed claims since the previous point.
     claimed: Decimal,
-    /// claimable − previous claimable + claimed (PLAN.md §2). Null when unknown.
+    /// claimable − previous claimable + claimed since the previous point. Null when unknown.
     real_delta: Option<Decimal>,
     /// Change of `total` vs the previous point.
     change: Option<Decimal>,

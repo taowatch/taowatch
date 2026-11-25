@@ -1,4 +1,4 @@
-//! TaoWatch HTTP API + WebSocket. Routes: PLAN.md §6.
+//! TaoWatch HTTP API + WebSocket.
 
 mod auth;
 mod data;

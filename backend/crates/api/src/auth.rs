@@ -1,4 +1,4 @@
-//! Passkey auth (webauthn-rs), sessions, invites and recovery codes. PLAN.md §5.
+//! Passkey auth (webauthn-rs), sessions, invites and recovery codes.
 
 use axum::Json;
 use axum::extract::{FromRequestParts, Path, State};
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn usernames() {
-        assert!(valid_username("minh"));
+        assert!(valid_username("alice"));
         assert!(valid_username("m.n_2-x"));
         assert!(!valid_username("M"));
         assert!(!valid_username("bad name"));

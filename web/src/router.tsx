@@ -12,7 +12,7 @@ function Shell() {
   );
 }
 
-// Routes mirror the design artboards (PLAN.md §7).
+// One route per screen of the UI design.
 export const router = createBrowserRouter([
   { path: '/login', element: <Placeholder title="Sign in" artboard="Login" /> },
   {

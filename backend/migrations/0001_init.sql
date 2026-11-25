@@ -1,4 +1,4 @@
--- TaoWatch initial schema (PLAN.md §4). Amounts are TAO with 9 decimals.
+-- TaoWatch initial schema. Amounts are TAO with 9 decimals.
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- ── auth ────────────────────────────────────────────────────────────────

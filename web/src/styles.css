@@ -1,4 +1,4 @@
-/* Design tokens — keep in sync with PLAN.md §7. Each color has exactly one meaning. */
+/* Design tokens. Each color has exactly one meaning. */
 :root {
   --bg: #0b0f0c;
   --bg-raised: #0e150f;

@@ -3,9 +3,6 @@
 Self-hosted, **read-only** tracker for Bittensor wallets: free / stake / claimable / last claim, daily charts
 (including whether claimable went up or down), passkey login for several users, realtime updates every block.
 
-- UI design (12 artboards): https://claude.ai/artifact/TMaav81t1MxX3o1ZbPARo2
-- Implementation plan and verified chain facts: `PLAN.md` (kept locally, not in git)
-
 ```
 backend/   Rust workspace — crates/core (config, db, chain), crates/api (axum + WebSocket), crates/indexer (subxt)
            migrations/ (sqlx, TimescaleDB) · metadata/finney.scale (pinned runtime metadata v15) · Dockerfile
@@ -110,11 +107,10 @@ Passkeys need a real authenticator. For local curl/WebSocket tests start the API
 `TAOWATCH_DEV_LOGIN=1 RP_ID=localhost RP_ORIGIN=http://localhost:8080` and call `POST /api/dev/login {"username":"…"}`
 (keep the cookie). The route exists only when all three conditions hold, logs a warning, and can never be enabled behind HTTPS.
 
-### macOS firewall (Little Snitch, LuLu, …)
+### Troubleshooting
 
-Every new Rust build is a new binary. A per-app firewall holds its outbound connections until you allow it, and the
-RPC connection then fails with `Connection timeout exceeded: 10s`. Allow `backend/target/*/api` and
-`backend/target/*/indexer` (or the whole `backend/target` folder) to connect to `*.opentensor.ai:443`.
+`Connection timeout exceeded: 10s` when connecting to `*.opentensor.ai`: check that outbound WebSocket (port 443)
+is allowed for the binary. Per-application firewalls treat every new build as a new program.
 
 ## Chain notes
 
