@@ -1,6 +1,7 @@
-//! History backfill from the archive node. Each worker handles one wallet at a time.
+//! History backfill from archive nodes (with fallback). Each worker handles one wallet at a time.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -29,28 +30,25 @@ pub async fn run(pool: PgPool, archive_url: String, workers: usize) -> Result<()
     if requeued > 0 {
         info!(n = requeued, "resuming interrupted backfill jobs");
     }
-    let chain = std::sync::Arc::new(OnceCell::<Chain>::new());
+    let archives = std::sync::Arc::new(Archives::new(&archive_url));
+    info!(endpoints = archives.urls.len(), "archive endpoints (fallback in this order)");
     let mut set = tokio::task::JoinSet::new();
     for w in 0..workers.max(1) {
-        let (pool, url, chain) = (pool.clone(), archive_url.clone(), chain.clone());
+        let (pool, archives) = (pool.clone(), archives.clone());
         set.spawn(async move {
             loop {
                 match store::next_job(&pool).await {
                     Ok(Some(job)) => {
-                        let archive = match chain.get_or_try_init(|| Chain::connect(&url)).await {
-                            Ok(c) => {
-                                let _ = store::set_archive_ok(&pool, true).await;
-                                c
-                            }
-                            Err(e) => {
-                                warn!(worker = w, error = %e, "archive unreachable");
-                                let _ = store::set_archive_ok(&pool, false).await;
-                                tokio::time::sleep(Duration::from_secs(30)).await;
-                                continue;
-                            }
-                        };
+                        if let Err(e) = archives.get().await {
+                            warn!(worker = w, error = %e, "archive unreachable");
+                            let _ = store::set_archive_ok(&pool, false).await;
+                            let _ = store::requeue(&pool, &job.address).await;
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            continue;
+                        }
+                        let _ = store::set_archive_ok(&pool, true).await;
                         info!(worker = w, address = %job.address, plan = %job.plan, "backfill started");
-                        let res = process(&pool, archive, &job).await;
+                        let res = process(&pool, &archives, &job).await;
                         let err = res.as_ref().err().map(|e| e.to_string());
                         if let Some(e) = &err {
                             warn!(address = %job.address, error = %e, "backfill failed");
@@ -73,23 +71,103 @@ pub async fn run(pool: PgPool, archive_url: String, workers: usize) -> Result<()
     anyhow::bail!("backfill workers stopped")
 }
 
-/// Retry transient archive errors with backoff; `Ok(None)` = pre-dTAO block.
-async fn snapshot_with_retry(chain: &Chain, block: u32, key: &chain::AccountId32) -> Result<Option<WalletSnapshot>> {
+/// Retry an archive call on transient errors (rate limit, timeouts), failing over between
+/// endpoints: `retry!(archives, |chain| chain.head())`. A macro, not a function taking an async
+/// closure, so the worker future stays `Send`.
+macro_rules! retry {
+    ($archives:expr, |$chain:ident| $call:expr) => {{
+        let archives: &Archives = $archives;
+        let mut attempt = 0u32;
+        loop {
+            let res = match archives.get().await {
+                Ok((i, $chain)) => $call.await.map_err(|e| (Some(i), anyhow::Error::from(e))),
+                Err(e) => Err((None, e)),
+            };
+            match res {
+                Ok(v) => break Ok::<_, anyhow::Error>(v),
+                Err((i, e)) if attempt < MAX_ATTEMPTS && (i.is_none() || is_transient(&format!("{e:#}"))) => {
+                    if let Some(i) = i {
+                        archives.fail_over(i);
+                    }
+                    tokio::time::sleep(archives.wait(attempt)).await;
+                    attempt += 1;
+                }
+                Err((_, e)) => break Err(e),
+            }
+        }
+    }};
+}
+
+/// Archive endpoints in order of preference (`SUBTENSOR_ARCHIVE_WS`, comma-separated).
+/// When the current one is rate-limited or times out, work moves on to the next one.
+pub struct Archives {
+    urls: Vec<String>,
+    chains: Vec<OnceCell<Chain>>,
+    current: AtomicUsize,
+}
+
+impl Archives {
+    pub fn new(list: &str) -> Self {
+        let urls: Vec<String> = list.split(',').map(str::trim).filter(|u| !u.is_empty()).map(str::to_owned).collect();
+        let chains = urls.iter().map(|_| OnceCell::new()).collect();
+        Self { urls, chains, current: AtomicUsize::new(0) }
+    }
+
+    /// The endpoint in use (connecting on first use). On a connection error, the next one takes over.
+    async fn get(&self) -> Result<(usize, &Chain)> {
+        anyhow::ensure!(!self.urls.is_empty(), "SUBTENSOR_ARCHIVE_WS is empty");
+        let i = self.current.load(Ordering::Relaxed) % self.urls.len();
+        match self.chains[i].get_or_try_init(|| Chain::connect(&self.urls[i])).await {
+            Ok(c) => Ok((i, c)),
+            Err(e) => {
+                self.fail_over(i);
+                Err(e.context(format!("connect {}", crate::redact(&self.urls[i]))))
+            }
+        }
+    }
+
+    /// Move on from endpoint `from` (no-op if another worker already did).
+    fn fail_over(&self, from: usize) {
+        let n = self.urls.len();
+        if n > 1 && self.current.compare_exchange(from, (from + 1) % n, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            info!(from = %crate::redact(&self.urls[from]), to = %crate::redact(&self.urls[(from + 1) % n]), "switching archive endpoint");
+        }
+    }
+
+    /// Wait before the next try: short while other endpoints are left to try, then exponential.
+    fn wait(&self, attempt: u32) -> Duration {
+        let n = self.urls.len().max(1) as u32;
+        if !(attempt + 1).is_multiple_of(n) { Duration::from_secs(1) } else { Duration::from_secs(backoff_secs(attempt / n)) }
+    }
+}
+
+/// Retry transient archive errors, failing over between endpoints; `Ok(None)` = pre-dTAO block.
+async fn snapshot_with_retry(archives: &Archives, block: u32, key: &chain::AccountId32) -> Result<Option<WalletSnapshot>> {
     let mut timeouts = 0;
+    let max_timeouts = MAX_TIMEOUTS * archives.urls.len().max(1) as u32;
     for attempt in 0..MAX_ATTEMPTS {
+        let (i, chain) = match archives.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(block, attempt, error = %format!("{e:#}"), "archive unreachable");
+                tokio::time::sleep(archives.wait(attempt)).await;
+                continue;
+            }
+        };
         match chain.snapshot_at(block, key).await {
             Ok(s) => return Ok(Some(s)),
             Err(SnapshotError::PreDtao) => return Ok(None),
             Err(SnapshotError::Other(e)) if is_transient(&format!("{e:#}")) => {
                 if is_timeout(&format!("{e:#}")) {
                     timeouts += 1;
-                    if timeouts >= MAX_TIMEOUTS {
-                        anyhow::bail!("block {block}: node timed out {timeouts} times: {e:#}");
+                    if timeouts >= max_timeouts {
+                        anyhow::bail!("block {block}: archive timed out {timeouts} times: {e:#}");
                     }
                 }
-                let wait = backoff_secs(attempt);
-                warn!(block, attempt, wait, error = %e, "archive busy, backing off");
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+                archives.fail_over(i);
+                let wait = archives.wait(attempt);
+                warn!(block, attempt, wait = wait.as_secs(), error = %format!("{e:#}"), "archive busy, retrying");
+                tokio::time::sleep(wait).await;
             }
             Err(SnapshotError::Other(e)) => return Err(e),
         }
@@ -97,10 +175,10 @@ async fn snapshot_with_retry(chain: &Chain, block: u32, key: &chain::AccountId32
     anyhow::bail!("gave up on block {block} after {MAX_ATTEMPTS} attempts")
 }
 
-async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
+async fn process(pool: &PgPool, archives: &Archives, job: &store::Job) -> Result<()> {
     let plan = Plan::parse(&job.plan, MAX_DAYS).unwrap_or(Plan::Short);
     let key = chain::parse_address(&job.address)?;
-    let head = chain.head().await?;
+    let head = retry!(archives, |c| c.head())?;
     let days = plan_days(plan);
     let total = days.len() as i32;
     let stored = store::stored_blocks(pool, &job.address).await?;
@@ -115,7 +193,7 @@ async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
         if stored.iter().any(|b| (b - block as i64).abs() < half_day) {
             continue;
         }
-        match snapshot_with_retry(chain, block, &key).await {
+        match snapshot_with_retry(archives, block, &key).await {
             Ok(Some(s)) => {
                 store::insert_snapshot(pool, &job.address, "backfill", &s).await?;
                 skipped_in_a_row = 0;
@@ -140,7 +218,7 @@ async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
         tokio::time::sleep(PAUSE).await;
     }
 
-    derive_claims(pool, chain, &job.address, &key).await?;
+    derive_claims(pool, archives, &job.address, &key).await?;
     info!(address = %job.address, "backfill done");
     Ok(())
 }
@@ -151,7 +229,7 @@ async fn process(pool: &PgPool, chain: &Chain, job: &store::Job) -> Result<()> {
 /// changes both move it). For each window between snapshots where it changed we
 /// binary-search the exact blocks, then read those blocks' events: a claim is
 /// recorded only if a `BasketClaimed` event exists, with the TAO amount it reports.
-async fn derive_claims(pool: &PgPool, chain: &Chain, address: &str, key: &chain::AccountId32) -> Result<()> {
+async fn derive_claims(pool: &PgPool, archives: &Archives, address: &str, key: &chain::AccountId32) -> Result<()> {
     let rows = store::claimed_history(pool, address).await?;
     let mut by_hotkey: BTreeMap<String, Vec<CumPoint>> = BTreeMap::new();
     for (hk, block, t, cum) in rows {
@@ -166,12 +244,12 @@ async fn derive_claims(pool: &PgPool, chain: &Chain, address: &str, key: &chain:
     for (hk, pts) in &by_hotkey {
         let hotkey = chain::parse_address(hk)?;
         for w in change_windows(pts) {
-            let blocks = retry(|| chain.basket_change_blocks(&hotkey, key, w.after_block, w.at_block)).await?;
+            let blocks = retry!(archives, |c| c.basket_change_blocks(&hotkey, key, w.after_block, w.at_block))?;
             for block in blocks {
                 if !checked.insert(block) {
                     continue; // already read this block's events for another validator
                 }
-                let (ts_ms, events) = retry(|| chain.wallet_events(block, &wallet)).await?;
+                let (ts_ms, events) = retry!(archives, |c| c.wallet_events(block, &wallet))?;
                 let mut per_hotkey: BTreeMap<String, u64> = BTreeMap::new();
                 for e in events {
                     if let chain::EventKind::Claim { hotkey, tao_rao } = e.kind {
@@ -194,21 +272,25 @@ async fn derive_claims(pool: &PgPool, chain: &Chain, address: &str, key: &chain:
     Ok(())
 }
 
-/// Retry an archive call on transient errors (rate limit, timeouts) with backoff.
-async fn retry<T, F, Fut>(mut f: F) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
-{
-    let mut attempt = 0;
-    loop {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) if attempt < MAX_ATTEMPTS && is_transient(&format!("{e:#}")) => {
-                tokio::time::sleep(Duration::from_secs(backoff_secs(attempt))).await;
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archives_fail_over_in_order_and_wrap() {
+        let a = Archives::new(" wss://a , wss://b,,wss://c ");
+        assert_eq!(a.urls, ["wss://a", "wss://b", "wss://c"]);
+        a.fail_over(0);
+        assert_eq!(a.current.load(Ordering::Relaxed), 1);
+        a.fail_over(0); // stale: another worker already moved on
+        assert_eq!(a.current.load(Ordering::Relaxed), 1);
+        a.fail_over(1);
+        a.fail_over(2);
+        assert_eq!(a.current.load(Ordering::Relaxed), 0);
+        // Try the other endpoints quickly, back off once all were tried.
+        assert_eq!(a.wait(0), Duration::from_secs(1));
+        assert_eq!(a.wait(1), Duration::from_secs(1));
+        assert_eq!(a.wait(2), Duration::from_secs(backoff_secs(0)));
+        assert_eq!(Archives::new("wss://a").wait(0), Duration::from_secs(backoff_secs(0)));
     }
 }

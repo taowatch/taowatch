@@ -129,4 +129,6 @@ is allowed for the binary. Per-application firewalls treat every new build as a 
   moves on stake changes — it only locates candidate blocks.
 - The TAO price comes from Binance's public `taousdt@ticker` WebSocket (no key); the status bar updates at most
   every 5 s and a sample is stored every 15 minutes. `TAOWATCH_PRICE=off` disables it, `TAOWATCH_PRICE_WS` changes the URL.
-- The public live node is pruned; history comes from the archive node, which rate-limits above ~2 concurrent workers.
+- The public live node is pruned; history comes from archive nodes. `SUBTENSOR_ARCHIVE_WS` takes a comma-separated
+  list tried in order: when one is rate-limited or times out, the next takes over. Public archives limit requests per IP,
+  so keep `BACKFILL_WORKERS` at 1–2 (one worker per wallet). History is read newest first, back to the dTAO launch.

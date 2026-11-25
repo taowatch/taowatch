@@ -293,6 +293,12 @@ pub async fn requeue_interrupted(pool: &PgPool) -> Result<u64> {
     Ok(sqlx::query("UPDATE backfill_jobs SET status = 'queued' WHERE status = 'running'").execute(pool).await?.rows_affected())
 }
 
+/// Put a job taken by a worker back in the queue (e.g. no archive reachable).
+pub async fn requeue(pool: &PgPool, address: &str) -> Result<()> {
+    sqlx::query("UPDATE backfill_jobs SET status = 'queued' WHERE address = $1 AND status = 'running'").bind(address).execute(pool).await?;
+    Ok(())
+}
+
 /// Claim the next queued job. A `running` job belongs to a worker and is never handed out twice.
 pub async fn next_job(pool: &PgPool) -> Result<Option<Job>> {
     let row: Option<(String, String)> = sqlx::query_as(

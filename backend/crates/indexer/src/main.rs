@@ -34,14 +34,16 @@ async fn main() -> Result<()> {
         let _ = dotenvy_load();
         let var = if flag("--archive") { "SUBTENSOR_ARCHIVE_WS" } else { "SUBTENSOR_WS" };
         let default = if flag("--archive") { "wss://archive.chain.opentensor.ai:443" } else { "wss://entrypoint-finney.opentensor.ai:443" };
-        std::env::var(var).unwrap_or_else(|_| default.into())
+        // SUBTENSOR_ARCHIVE_WS may list fallbacks: the CLI uses the first one.
+        let v = std::env::var(var).unwrap_or_else(|_| default.into());
+        v.split(',').map(str::trim).find(|u| !u.is_empty()).unwrap_or(default).to_owned()
     };
 
     match args.first().map(String::as_str) {
         Some("run") => {
             let cfg = Config::from_env()?;
             let pool = db::connect(&cfg.database_url).await?;
-            info!(live = %redact(&cfg.subtensor_ws), archive = %redact(&cfg.subtensor_archive_ws), workers = cfg.backfill_workers, "indexer starting");
+            info!(live = %redact(&cfg.subtensor_ws), archive = %cfg.subtensor_archive_ws.split(',').map(redact).collect::<Vec<_>>().join(","), workers = cfg.backfill_workers, "indexer starting");
             tokio::try_join!(
                 live::run(pool.clone(), cfg.subtensor_ws.clone()),
                 backfill::run(pool.clone(), cfg.subtensor_archive_ws.clone(), cfg.backfill_workers),
@@ -149,5 +151,7 @@ mod tests {
         assert_eq!(super::redact("wss://x.io/ws?apikey=secret"), "wss://x.io/ws?***");
         assert_eq!(super::redact("wss://u:p@x.io:443"), "wss://***@x.io:443");
         assert_eq!(super::redact("wss://x.io:443"), "wss://x.io:443");
+        let list = "wss://a.io/ws?apikey=k,wss://b.io:443";
+        assert_eq!(list.split(',').map(super::redact).collect::<Vec<_>>().join(","), "wss://a.io/ws?***,wss://b.io:443");
     }
 }
