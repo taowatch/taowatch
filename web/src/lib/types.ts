@@ -84,6 +84,9 @@ export type EventRow = {
   hotkey: string | null;
   label: string | null;
   netuid: number | null;
+  from_hotkey: string | null;
+  from_label: string | null;
+  from_netuid: number | null;
   amount: Dec | null;
   source: 'event' | 'snapshot_diff';
 };

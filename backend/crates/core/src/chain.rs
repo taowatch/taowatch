@@ -331,6 +331,7 @@ impl Chain {
                 _ => {}
             }
         }
+        collapse(&mut out);
         Ok((ts, out))
     }
 
@@ -392,6 +393,59 @@ impl Chain {
         }
         Ok(out)
     }
+}
+
+/// Pallet account that holds staked TAO (`modlsubtensr…`): transfers to/from it are the money
+/// leg of a stake / unstake, not a payment.
+const STAKE_POOL_PREFIX: &[u8] = b"modlsubtensr";
+
+/// One user action, one event. The chain reports a move (or swap / stake transfer) as
+/// `StakeRemoved` + `StakeAdded` + `StakeMoved`, and a stake as `Transfer` (to the pool account)
+/// + `StakeAdded`. Keep the event that describes the action and drop its parts.
+fn collapse(events: &mut Vec<WalletEvent>) {
+    let mut drop = vec![false; events.len()];
+    for (i, e) in events.iter().enumerate() {
+        match &e.kind {
+            EventKind::TransferIn { from: other, .. } | EventKind::TransferOut { to: other, .. } if other.0.starts_with(STAKE_POOL_PREFIX) => {
+                drop[i] = true;
+            }
+            _ => {}
+        }
+    }
+    for i in 0..events.len() {
+        // (coldkey, hotkey, netuid) of the removed and of the added part.
+        let (removed, added) = match &events[i].kind {
+            EventKind::StakeMoved { from_hotkey, from_netuid, to_hotkey, to_netuid, .. } => (
+                Some((&events[i].coldkey, from_hotkey, *from_netuid)),
+                Some((&events[i].coldkey, to_hotkey, *to_netuid)),
+            ),
+            EventKind::StakeTransferredOut { hotkey, netuid, .. } => (Some((&events[i].coldkey, hotkey, *netuid)), None),
+            EventKind::StakeTransferredIn { hotkey, netuid, .. } => (None, Some((&events[i].coldkey, hotkey, *netuid))),
+            _ => continue,
+        };
+        // The parts come just before the summary event: take the nearest unclaimed match.
+        let mut part = |want: (&AccountId32, &AccountId32, u16), added: bool| {
+            if let Some(j) = (0..i).rev().find(|&j| {
+                !drop[j]
+                    && events[j].coldkey == *want.0
+                    && match &events[j].kind {
+                        EventKind::StakeAdded { hotkey, netuid, .. } if added => hotkey == want.1 && *netuid == want.2,
+                        EventKind::StakeRemoved { hotkey, netuid, .. } if !added => hotkey == want.1 && *netuid == want.2,
+                        _ => false,
+                    }
+            }) {
+                drop[j] = true;
+            }
+        };
+        if let Some(r) = removed {
+            part(r, false);
+        }
+        if let Some(a) = added {
+            part(a, true);
+        }
+    }
+    let mut keep = drop.iter().map(|d| !d);
+    events.retain(|_| keep.next().unwrap_or(true));
 }
 
 /// True when a runtime API (or one of its methods) does not exist at this block's runtime.
@@ -551,4 +605,58 @@ async fn snapshot_inner(
     }
 
     Ok(WalletSnapshot { block, timestamp_ms, free_rao, positions, claimable_rao, previews, claimed_rao })
+}
+
+#[cfg(test)]
+mod collapse_tests {
+    use super::*;
+
+    fn ev(index: u32, ck: u8, kind: EventKind) -> WalletEvent {
+        WalletEvent { index, coldkey: AccountId32([ck; 32]), kind }
+    }
+    fn hk(b: u8) -> AccountId32 {
+        AccountId32([b; 32])
+    }
+    fn pool() -> AccountId32 {
+        let mut a = [0u8; 32];
+        a[..12].copy_from_slice(STAKE_POOL_PREFIX);
+        AccountId32(a)
+    }
+
+    #[test]
+    fn a_move_is_one_event() {
+        // Block #9605664 on finney: removed + added + moved for one move of 381.42 τ.
+        let mut v = vec![
+            ev(185, 1, EventKind::StakeRemoved { hotkey: hk(7), netuid: 0, tao_rao: 5 }),
+            ev(186, 1, EventKind::StakeAdded { hotkey: hk(8), netuid: 0, tao_rao: 5 }),
+            ev(187, 1, EventKind::StakeMoved { from_hotkey: hk(7), from_netuid: 0, to_hotkey: hk(8), to_netuid: 0, tao_rao: 5 }),
+        ];
+        collapse(&mut v);
+        assert_eq!(v.len(), 1);
+        assert!(matches!(v[0].kind, EventKind::StakeMoved { .. }));
+    }
+
+    #[test]
+    fn a_stake_drops_its_pool_transfer_but_not_real_transfers() {
+        // Block #9533194: Transfer to modlsubtensr… + StakeAdded for one stake of 10 τ.
+        let mut v = vec![
+            ev(260, 1, EventKind::TransferOut { to: pool(), tao_rao: 10 }),
+            ev(262, 1, EventKind::StakeAdded { hotkey: hk(7), netuid: 0, tao_rao: 10 }),
+            ev(270, 1, EventKind::TransferOut { to: hk(9), tao_rao: 3 }),
+        ];
+        collapse(&mut v);
+        assert_eq!(v.iter().map(|e| e.index).collect::<Vec<_>>(), [262, 270]);
+    }
+
+    #[test]
+    fn unrelated_stakes_in_the_same_block_stay() {
+        let mut v = vec![
+            ev(1, 1, EventKind::StakeAdded { hotkey: hk(9), netuid: 3, tao_rao: 1 }),
+            ev(2, 1, EventKind::StakeRemoved { hotkey: hk(7), netuid: 0, tao_rao: 5 }),
+            ev(3, 1, EventKind::StakeAdded { hotkey: hk(8), netuid: 0, tao_rao: 5 }),
+            ev(4, 1, EventKind::StakeMoved { from_hotkey: hk(7), from_netuid: 0, to_hotkey: hk(8), to_netuid: 0, tao_rao: 5 }),
+        ];
+        collapse(&mut v);
+        assert_eq!(v.iter().map(|e| e.index).collect::<Vec<_>>(), [1, 4]);
+    }
 }

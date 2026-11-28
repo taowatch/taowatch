@@ -656,6 +656,10 @@ pub struct EventRow {
     hotkey: Option<String>,
     label: Option<String>,
     netuid: Option<i32>,
+    /// Source of a `stake_moved` (hotkey / netuid are its destination).
+    from_hotkey: Option<String>,
+    from_label: Option<String>,
+    from_netuid: Option<i32>,
     amount: Option<Decimal>,
     source: String,
 }
@@ -671,8 +675,9 @@ pub async fn events(State(s): State<AppState>, user: AuthUser, Query(q): Query<E
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let rows = sqlx::query_as::<_, EventRow>(
-        "SELECT e.block, e.idx, e.ts, e.address, e.kind, e.hotkey, v.label, e.netuid, e.amount, e.source
-         FROM events e LEFT JOIN validators v ON v.hotkey = e.hotkey
+        "SELECT e.block, e.idx, e.ts, e.address, e.kind, e.hotkey, v.label, e.netuid,
+                e.from_hotkey, f.label AS from_label, e.from_netuid, e.amount, e.source
+         FROM events e LEFT JOIN validators v ON v.hotkey = e.hotkey LEFT JOIN validators f ON f.hotkey = e.from_hotkey
          WHERE e.address = ANY($1) AND ($2::text[] IS NULL OR e.kind = ANY($2)) AND e.kind <> 'root_claim_total'
            AND ($3::bigint IS NULL OR e.block < $3)
          ORDER BY e.block DESC, e.idx DESC LIMIT $4",

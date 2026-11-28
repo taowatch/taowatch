@@ -201,6 +201,10 @@ pub async fn insert_events(pool: &PgPool, block: u32, block_ts_ms: u64, events: 
     let mut claims: std::collections::BTreeMap<(String, String), u64> = Default::default();
     for e in events {
         let address = e.coldkey.to_string();
+        let from = match &e.kind {
+            EventKind::StakeMoved { from_hotkey, from_netuid, .. } => Some((from_hotkey.to_string(), *from_netuid as i32)),
+            _ => None,
+        };
         let (kind, hotkey, netuid, amount): (&str, Option<String>, Option<i32>, Option<u64>) = match &e.kind {
             EventKind::Claim { hotkey, tao_rao } => ("claim", Some(hotkey.to_string()), Some(0), Some(*tao_rao)),
             EventKind::RootClaimTotal { tao_rao } => ("root_claim_total", None, Some(0), Some(*tao_rao)),
@@ -223,8 +227,8 @@ pub async fn insert_events(pool: &PgPool, block: u32, block_ts_ms: u64, events: 
             EventKind::TransferOut { tao_rao, .. } => ("transfer_out", None, None, Some(*tao_rao)),
         };
         sqlx::query(
-            "INSERT INTO events (block, idx, ts, address, kind, hotkey, netuid, amount, source)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'event') ON CONFLICT DO NOTHING",
+            "INSERT INTO events (block, idx, ts, address, kind, hotkey, netuid, amount, from_hotkey, from_netuid, source)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'event') ON CONFLICT DO NOTHING",
         )
         .bind(block as i64)
         .bind(e.index as i32)
@@ -234,6 +238,8 @@ pub async fn insert_events(pool: &PgPool, block: u32, block_ts_ms: u64, events: 
         .bind(&hotkey)
         .bind(netuid)
         .bind(amount.map(tao))
+        .bind(from.as_ref().map(|f| &f.0))
+        .bind(from.as_ref().map(|f| f.1))
         .execute(&mut *tx)
         .await?;
         if let EventKind::Claim { hotkey, tao_rao } = &e.kind {

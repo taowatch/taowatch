@@ -6,14 +6,15 @@ import type { ClaimRow, EventRow, WalletRow } from '../lib/types';
 import { ErrorBox, KeyBar, Loading, Page, Panel, Seg } from '../components/ui';
 
 type Type = 'all' | 'claim' | 'stake' | 'transfer';
-type Item = { key: string; ts: string; kind: string; address: string; detail: string; amount: number | null; source: string; tone: string };
+/** `sign`: +1 adds to the wallet, −1 takes from it, 0 neither (a move between validators). */
+type Item = { key: string; ts: string; kind: string; address: string; detail: string; amount: number | null; sign: number; source: string; tone: string };
 
 const KIND: Record<string, [string, string, number]> = {
   // label, tone, sign
   claim: ['CLAIM', 'claimable', 1],
   stake_added: ['STAKE +', 'stake', 1],
   stake_removed: ['UNSTAKE', 'stake', -1],
-  stake_moved: ['MOVE', 'stake', 1],
+  stake_moved: ['MOVE', 'stake', 0], // stays staked: amount shown without a sign
   stake_transfer_in: ['STAKE IN', 'stake', 1],
   stake_transfer_out: ['STAKE OUT', 'stake', -1],
   transfer_in: ['RECEIVED', '', 1],
@@ -36,14 +37,17 @@ export function Activity() {
   const items: Item[] = [];
   if (type === 'all' || type === 'claim') {
     for (const c of claims.data ?? []) {
-      items.push({ key: `c-${c.address}-${c.hotkey}-${c.ts}`, ts: c.ts, kind: 'claim', address: c.address, detail: `root claim · ${vname(c.hotkey, c.label)}`, amount: Number(c.amount), source: c.block ? block(c.block) : 'between snapshots', tone: 'claimable' });
+      items.push({ key: `c-${c.address}-${c.hotkey}-${c.ts}`, ts: c.ts, kind: 'claim', address: c.address, detail: `root claim · ${vname(c.hotkey, c.label)}`, amount: Number(c.amount), sign: 1, source: c.block ? block(c.block) : 'between snapshots', tone: 'claimable' });
     }
   }
   if (type !== 'claim') {
     for (const e of events.data ?? []) {
       if (e.kind === 'claim') continue; // claims come from the claims table above
       const [, tone, sign] = KIND[e.kind] ?? [e.kind, '', 1];
-      items.push({ key: `e-${e.block}-${e.idx}-${e.address}`, ts: e.ts, kind: e.kind, address: e.address, detail: `${e.netuid !== null ? `SN${e.netuid}` : ''}${e.hotkey ? ` · ${vname(e.hotkey, e.label)}` : ''}`, amount: e.amount === null ? null : sign * Number(e.amount), source: block(e.block), tone });
+      const to = `${e.netuid !== null ? `SN${e.netuid}` : ''}${e.hotkey ? ` · ${vname(e.hotkey, e.label)}` : ''}`;
+      const from = e.from_hotkey ? `${e.from_netuid !== null && e.from_netuid !== e.netuid ? `SN${e.from_netuid} · ` : ''}${vname(e.from_hotkey, e.from_label)} → ` : '';
+      const detail = e.from_hotkey && e.from_netuid === e.netuid ? `SN${e.netuid} · ${from}${vname(e.hotkey ?? '', e.label)}` : `${from}${to}`;
+      items.push({ key: `e-${e.block}-${e.idx}-${e.address}`, ts: e.ts, kind: e.kind, address: e.address, detail, amount: e.amount === null ? null : Number(e.amount), sign, source: block(e.block), tone });
     }
   }
   items.sort((a, b) => (a.ts < b.ts ? 1 : -1));
@@ -81,7 +85,7 @@ export function Activity() {
                       <td className={`strong ${i.tone}`}>{KIND[i.kind]?.[0] ?? i.kind}</td>
                       <td>{label(i.address)}</td>
                       <td className="line-2">{i.detail}</td>
-                      <td className={`r ${i.amount === null ? 'dim' : i.amount >= 0 ? 'up' : 'down'}`}>{i.amount === null ? '' : `${i.amount >= 0 ? '+' : '−'}${fmt(Math.abs(i.amount), 4)} τ`}</td>
+                      <td className={`r ${i.amount === null || i.sign === 0 ? 'dim' : i.sign > 0 ? 'up' : 'down'}`}>{i.amount === null ? '' : `${i.sign > 0 ? '+' : i.sign < 0 ? '−' : ''}${fmt(i.amount, 4)} τ`}</td>
                       <td className="dim hide-m">{i.source}</td>
                     </tr>
                   ))}
