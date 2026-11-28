@@ -11,6 +11,11 @@ fn tao(rao: u64) -> Decimal {
     rao_to_tao(rao as u128)
 }
 
+/// Signed RAO (basket bookkeeping can dip below zero) as TAO.
+fn signed_tao(rao: i64) -> Decimal {
+    Decimal::new(rao, 9)
+}
+
 pub fn ts(ms: u64) -> Result<OffsetDateTime> {
     Ok(OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)?)
 }
@@ -164,7 +169,7 @@ async fn insert_positions(tx: &mut Transaction<'_, Postgres>, address: &str, t: 
         .bind(rao_to_tao(p.value_rao()))
         .bind(preview.map(|v| tao(v.accrued_rao)))
         .bind(preview.map(|v| tao(v.redeemable_rao)))
-        .bind(claimed.map(tao))
+        .bind(claimed.map(signed_tao))
         .execute(&mut **tx)
         .await?;
     }
@@ -178,7 +183,7 @@ async fn insert_positions(tx: &mut Transaction<'_, Postgres>, address: &str, t: 
         .bind(address)
         .bind(s.block as i64)
         .bind(hk.to_string())
-        .bind(tao(*cum))
+        .bind(signed_tao(*cum))
         .execute(&mut **tx)
         .await?;
     }
@@ -347,6 +352,16 @@ pub async fn job_finished(pool: &PgPool, address: &str, error: Option<&str>) -> 
 /// Blocks already stored for this wallet (so an interrupted job resumes).
 pub async fn stored_blocks(pool: &PgPool, address: &str) -> Result<std::collections::HashSet<i64>> {
     Ok(sqlx::query_scalar::<_, i64>("SELECT block FROM snapshots WHERE address = $1")
+        .bind(address)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+/// Blocks whose events are already stored for this wallet.
+pub async fn event_blocks(pool: &PgPool, address: &str) -> Result<std::collections::HashSet<i64>> {
+    Ok(sqlx::query_scalar::<_, i64>("SELECT DISTINCT block FROM events WHERE address = $1 AND source = 'event'")
         .bind(address)
         .fetch_all(pool)
         .await?

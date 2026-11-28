@@ -129,6 +129,13 @@ async fn process_block(
     if !events.is_empty() {
         info!(block, n = events.len(), "wallet events");
         store::insert_events(pool, block, block_ts, &events).await?;
+        // A stake into a validator we have not seen: name it now, before the browsers refresh.
+        match tokio::time::timeout(Duration::from_secs(20), crate::names::name_new(pool, chain)).await {
+            Ok(Ok(n)) if n > 0 => info!(block, hotkeys = n, "named new validators"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => warn!(block, error = %format!("{e:#}"), "naming new validators failed (retried by the names job)"),
+            Err(_) => warn!(block, "naming new validators timed out (retried by the names job)"),
+        }
         for e in &events {
             store::notify(pool, "event", &format!("{}:{}", e.coldkey, block)).await?;
         }

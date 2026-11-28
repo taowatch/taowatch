@@ -5,7 +5,7 @@
 //! indexer track <ss58> [rec|short|none]         start tracking a wallet and queue its history
 //! indexer snapshot <ss58> [--archive] [--at N]  read one wallet and print it (no database)
 //! indexer events <block> <ss58> [--archive]     print the wallet's events in one block (no database)
-//! indexer name <hotkey>...                      print each validator hotkey's on-chain name (no database)
+//! indexer name [<hotkey>...]                    print validator names: the given hotkeys, or the top (root) validators (no database)
 //! ```
 
 mod backfill;
@@ -104,16 +104,19 @@ async fn main() -> Result<()> {
         }
         Some("name") => {
             let chain = Chain::connect(&rpc_url()).await?;
-            anyhow::ensure!(args.len() > 1, "usage: indexer name <hotkey>...");
-            for hk in &args[1..] {
-                let key = chain::parse_address(hk)?;
-                println!("{key}  {}", chain.validator_name(&key).await?.as_deref().unwrap_or("-"));
+            let keys = if args.len() == 1 {
+                chain.top_validators().await?
+            } else {
+                args[1..].iter().map(|a| chain::parse_address(a)).collect::<Result<Vec<_>>>()?
+            };
+            for key in &keys {
+                println!("{key}  {}", chain.validator_name(key).await?.as_deref().unwrap_or("-"));
             }
             Ok(())
         }
         _ => {
             eprintln!(
-                "usage: indexer <run | track <ss58> [plan] | snapshot <ss58> [--archive] [--at N] | events <block> <ss58> [--archive] | name <hotkey>...>"
+                "usage: indexer <run | track <ss58> [plan] | snapshot <ss58> [--archive] [--at N] | events <block> <ss58> [--archive] | name [<hotkey>...]>"
             );
             std::process::exit(2);
         }
@@ -139,8 +142,8 @@ fn print_snapshot(s: &WalletSnapshot) {
         ),
         None => println!("claimable  n/a (no basket runtime at this block)"),
     }
-    let claimed: u128 = s.claimed_rao.iter().map(|(_, v)| *v as u128).sum();
-    println!("claimed    {} τ all-time", rao_to_tao(claimed));
+    let claimed: i64 = s.claimed_rao.iter().map(|(_, v)| *v).sum();
+    println!("basket     {} τ claimed bookkeeping (not TAO received)", rust_decimal::Decimal::new(claimed, 9));
 }
 
 /// Hide credentials in an RPC URL (`?apikey=…`, `user:pass@`) before logging it.

@@ -219,6 +219,7 @@ async fn process(pool: &PgPool, archives: &Archives, job: &store::Job) -> Result
     }
 
     derive_claims(pool, archives, &job.address, &key).await?;
+    derive_events(pool, archives, &job.address, &key, head).await?;
     info!(address = %job.address, "backfill done");
     Ok(())
 }
@@ -269,6 +270,49 @@ async fn derive_claims(pool: &PgPool, archives: &Archives, address: &str, key: &
         }
     }
     info!(%address, claims = found, blocks_checked = checked.len(), "claims confirmed from events");
+    Ok(())
+}
+
+/// Find every stake / unstake / move / transfer the wallet made in the backfilled range.
+///
+/// They all need the coldkey's signature, so its nonce goes up in exactly those blocks: per
+/// window between stored snapshots (and up to the head) where the nonce changed, bisect the
+/// blocks, then store their events. Blocks whose events are already stored (the live loop saw
+/// them) are not read again; event storage is idempotent, so a rerun only costs nonce reads.
+async fn derive_events(pool: &PgPool, archives: &Archives, address: &str, key: &chain::AccountId32, head: u32) -> Result<()> {
+    let mut points: Vec<u32> = store::stored_blocks(pool, address).await?.into_iter().map(|b| b as u32).filter(|b| *b < head).collect();
+    points.push(head);
+    points.sort_unstable();
+    points.dedup();
+    let known = store::event_blocks(pool, address).await?;
+    let wallet = HashSet::from([key.0]);
+    let (mut signed, mut stored, mut failed) = (0usize, 0usize, 0usize);
+    let mut prev: Option<(u32, u32)> = None;
+    for at in points {
+        let n = retry!(archives, |c| c.nonce_at(at, key))?;
+        if let Some((from, n_from)) = prev
+            && n != n_from
+        {
+            let blocks = retry!(archives, |c| c.signed_blocks(key, from, n_from, at, n))?;
+            signed += blocks.len();
+            for block in blocks.into_iter().filter(|b| !known.contains(&(*b as i64))) {
+                match retry!(archives, |c| c.wallet_events(block, &wallet)) {
+                    Ok((ts_ms, events)) => {
+                        store::insert_events(pool, block, ts_ms, &events).await?;
+                        stored += events.len();
+                    }
+                    // An old runtime with a different event layout: skip that block, keep going.
+                    Err(e) => {
+                        failed += 1;
+                        warn!(%address, block, error = %format!("{e:#}"), "events unreadable, skipped");
+                    }
+                }
+            }
+        }
+        prev = Some((at, n));
+        tokio::time::sleep(PAUSE / 4).await;
+    }
+    info!(%address, signed_blocks = signed, events = stored, unreadable = failed, "wallet events backfilled");
     Ok(())
 }
 

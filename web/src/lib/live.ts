@@ -51,6 +51,9 @@ export function useLive(enabled: boolean) {
             break;
           case 'event':
             for (const k of ['events', 'claims']) void qc.invalidateQueries({ queryKey: [k] });
+            // Stake moved / claimed: the wallet notice for this same block follows right after the
+            // event, so let it through the 10 s throttle instead of showing old positions for a while.
+            last.current = 0;
             break;
           case 'price':
             // The price arrives with the message: update the cache directly, no refetch.

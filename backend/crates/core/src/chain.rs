@@ -21,6 +21,7 @@ type Acc = [u8; 32];
 
 #[derive(Debug, scale_decode::DecodeAsType)]
 struct AccountInfo {
+    nonce: u32,
     data: AccountData,
 }
 #[derive(Debug, scale_decode::DecodeAsType)]
@@ -83,7 +84,8 @@ pub struct WalletSnapshot {
     pub previews: Vec<BasketPreview>,
     /// `BasketClaimed(hotkey, coldkey)` per hotkey — basket *bookkeeping*, not TAO received
     /// (it also moves on stake changes). Only for locating claims; amounts come from events.
-    pub claimed_rao: Vec<(AccountId32, u64)>,
+    /// Signed on chain: a stake move can leave it slightly negative (seen: -2).
+    pub claimed_rao: Vec<(AccountId32, i64)>,
 }
 
 impl WalletSnapshot {
@@ -231,9 +233,9 @@ impl Chain {
     }
 
     /// Cumulative claimed RAO for (hotkey, coldkey) at a block; 0 if absent.
-    pub async fn basket_claimed_at(&self, block: u32, hotkey: &AccountId32, coldkey: &AccountId32) -> Result<u64> {
+    pub async fn basket_claimed_at(&self, block: u32, hotkey: &AccountId32, coldkey: &AccountId32) -> Result<i64> {
         let at = self.api.at_block(block).await?;
-        let addr = dynamic::storage::<(Acc, Acc), u64>("SubtensorModule", "BasketClaimed");
+        let addr = dynamic::storage::<(Acc, Acc), i64>("SubtensorModule", "BasketClaimed");
         match at.storage().try_fetch(addr, (hotkey.0, coldkey.0)).await? {
             Some(v) => Ok(v.decode()?),
             None => Ok(0),
@@ -332,6 +334,39 @@ impl Chain {
         Ok((ts, out))
     }
 
+    /// Account nonce of `coldkey` at `block` (0 for an account that does not exist yet).
+    pub async fn nonce_at(&self, block: u32, coldkey: &AccountId32) -> Result<u32> {
+        let at = self.api.at_block(block).await?;
+        Ok(match at.storage().try_fetch(dynamic::storage::<(Acc,), AccountInfo>("System", "Account"), (coldkey.0,)).await? {
+            Some(v) => v.decode()?.nonce,
+            None => 0,
+        })
+    }
+
+    /// Every block in `(from, to]` where `coldkey` signed a transaction (its nonce went up),
+    /// oldest first, by bisecting the nonce. Stake, unstake, move and transfers all need the
+    /// coldkey's signature, so their blocks are all here (calls made through a proxy are not).
+    /// `n_from` / `n_to` are the nonces at `from` / `to` when already known.
+    pub async fn signed_blocks(&self, coldkey: &AccountId32, from: u32, n_from: u32, to: u32, n_to: u32) -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        let mut stack = vec![(from, n_from, to, n_to)];
+        while let Some((lo, n_lo, hi, n_hi)) = stack.pop() {
+            if n_lo == n_hi || hi <= lo {
+                continue;
+            }
+            if hi - lo == 1 {
+                out.push(hi);
+                continue;
+            }
+            let mid = lo + (hi - lo) / 2;
+            let n_mid = self.nonce_at(mid, coldkey).await?;
+            stack.push((lo, n_lo, mid, n_mid));
+            stack.push((mid, n_mid, hi, n_hi));
+        }
+        out.sort_unstable();
+        Ok(out)
+    }
+
     /// All blocks in `(from, to]` where the `BasketClaimed(hotkey, coldkey)` accounting
     /// value changed, newest first, found by repeated binary search.
     ///
@@ -374,13 +409,24 @@ where
     move |e| anyhow::Error::from(e).context(what)
 }
 
-/// Live and historical snapshots share this one code path.
 #[derive(Debug, scale_decode::DecodeAsType)]
 struct RawIdentity {
     name: Vec<u8>,
 }
 
 impl Chain {
+    /// The top validators: every hotkey registered on the root subnet (netuid 0), which only
+    /// admits the largest stakes (64 slots on finney).
+    pub async fn top_validators(&self) -> Result<Vec<AccountId32>> {
+        let at = self.api.at_current_block().await?;
+        let mut out = Vec::new();
+        let mut it = at.storage().iter(dynamic::storage::<(u16, u16), Acc>("SubtensorModule", "Keys"), (0u16,)).await?;
+        while let Some(kv) = it.next().await {
+            out.push(AccountId32(kv?.value().decode()?));
+        }
+        Ok(out)
+    }
+
     /// On-chain name of a validator hotkey: `IdentitiesV2(Owner(hotkey)).name`, trimmed.
     /// `None` when the owner has set no identity (or an empty name).
     pub async fn validator_name(&self, hotkey: &AccountId32) -> Result<Option<String>> {
@@ -397,6 +443,7 @@ impl Chain {
     }
 }
 
+/// Live and historical snapshots share this one code path.
 async fn snapshot_inner(
     at: &subxt::client::OnlineClientAtBlock<SubstrateConfig>,
     block: u32,
@@ -494,7 +541,7 @@ async fn snapshot_inner(
         hotkeys.sort();
         hotkeys.dedup();
         for hk in hotkeys {
-            let addr = dynamic::storage::<(Acc, Acc), u64>("SubtensorModule", "BasketClaimed");
+            let addr = dynamic::storage::<(Acc, Acc), i64>("SubtensorModule", "BasketClaimed");
             let v = match at.storage().try_fetch(addr, (hk, ck)).await.map_err(ctx("BasketClaimed"))? {
                 Some(v) => v.decode().map_err(ctx("decode BasketClaimed"))?,
                 None => 0,
