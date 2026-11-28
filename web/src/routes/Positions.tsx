@@ -153,6 +153,7 @@ export function Positions() {
           {selected && (
             <Panel title={`SN${selected.netuid} · ${vname(selected)}`}>
               <dl className="kv">
+                <dt>validator</dt><dd>{selected.label ?? <span className="dim">no on-chain name</span>}</dd>
                 <dt>hotkey</dt><dd className="break">{selected.hotkey}</dd>
                 <dt>subnet</dt><dd>SN{selected.netuid}{selected.netuid === 0 ? ' (root)' : ''}</dd>
                 <dt>amount</dt><dd>{selected.netuid === 0 ? tao(selected.amount, 4) : `${Number(selected.amount).toFixed(4)} α`}</dd>

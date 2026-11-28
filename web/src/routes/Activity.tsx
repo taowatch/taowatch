@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getJson } from '../lib/api';
-import { block, fmt, short, utc } from '../lib/format';
+import { block, fmt, short, vname, utc } from '../lib/format';
 import type { ClaimRow, EventRow, WalletRow } from '../lib/types';
 import { ErrorBox, KeyBar, Loading, Page, Panel, Seg } from '../components/ui';
 
@@ -36,14 +36,14 @@ export function Activity() {
   const items: Item[] = [];
   if (type === 'all' || type === 'claim') {
     for (const c of claims.data ?? []) {
-      items.push({ key: `c-${c.address}-${c.hotkey}-${c.ts}`, ts: c.ts, kind: 'claim', address: c.address, detail: `root claim · ${short(c.hotkey)}`, amount: Number(c.amount), source: c.block ? block(c.block) : 'between snapshots', tone: 'claimable' });
+      items.push({ key: `c-${c.address}-${c.hotkey}-${c.ts}`, ts: c.ts, kind: 'claim', address: c.address, detail: `root claim · ${vname(c.hotkey, c.label)}`, amount: Number(c.amount), source: c.block ? block(c.block) : 'between snapshots', tone: 'claimable' });
     }
   }
   if (type !== 'claim') {
     for (const e of events.data ?? []) {
       if (e.kind === 'claim') continue; // claims come from the claims table above
       const [, tone, sign] = KIND[e.kind] ?? [e.kind, '', 1];
-      items.push({ key: `e-${e.block}-${e.idx}-${e.address}`, ts: e.ts, kind: e.kind, address: e.address, detail: `${e.netuid !== null ? `SN${e.netuid}` : ''}${e.hotkey ? ` · ${short(e.hotkey)}` : ''}`, amount: e.amount === null ? null : sign * Number(e.amount), source: block(e.block), tone });
+      items.push({ key: `e-${e.block}-${e.idx}-${e.address}`, ts: e.ts, kind: e.kind, address: e.address, detail: `${e.netuid !== null ? `SN${e.netuid}` : ''}${e.hotkey ? ` · ${vname(e.hotkey, e.label)}` : ''}`, amount: e.amount === null ? null : sign * Number(e.amount), source: block(e.block), tone });
     }
   }
   items.sort((a, b) => (a.ts < b.ts ? 1 : -1));

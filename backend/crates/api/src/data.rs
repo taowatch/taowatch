@@ -56,6 +56,11 @@ pub struct RangeQuery {
     format: Option<String>,
 }
 
+/// Quote a free-text CSV field (validator names may contain commas or quotes).
+fn csv_field(v: &str) -> String {
+    if v.contains([',', '"', '\n', '\r']) { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.to_owned() }
+}
+
 fn csv_response(name: &str, header_row: &str, rows: Vec<String>) -> Response {
     let body = std::iter::once(header_row.to_owned()).chain(rows).collect::<Vec<_>>().join("\n") + "\n";
     (
@@ -304,6 +309,8 @@ pub async fn wallet_detail(State(s): State<AppState>, user: AuthUser, Path(addre
 pub struct ClaimRow {
     address: String,
     hotkey: String,
+    /// Validator's on-chain name (`validators.label`), when known.
+    label: Option<String>,
     block: Option<i64>,
     #[serde(with = "time::serde::rfc3339")]
     ts: Ts,
@@ -315,7 +322,8 @@ pub async fn claims(State(s): State<AppState>, user: AuthUser, Query(q): Query<R
     let addrs = owned(&s, &user, q.wallet.as_deref()).await?;
     Ok(Json(
         sqlx::query_as::<_, ClaimRow>(
-            "SELECT address, hotkey, block, ts, amount, exact FROM claims WHERE address = ANY($1) AND ts >= $2 ORDER BY ts DESC LIMIT 500",
+            "SELECT c.address, c.hotkey, v.label, c.block, c.ts, c.amount, c.exact FROM claims c LEFT JOIN validators v ON v.hotkey = c.hotkey
+             WHERE c.address = ANY($1) AND c.ts >= $2 ORDER BY c.ts DESC LIMIT 500",
         )
         .bind(&addrs)
         .bind(range_start(q.range.as_deref().or(Some("all")))?)
@@ -515,6 +523,7 @@ pub struct Summary {
 pub struct LastClaim {
     address: String,
     hotkey: String,
+    label: Option<String>,
     block: Option<i64>,
     #[serde(with = "time::serde::rfc3339")]
     ts: Ts,
@@ -556,7 +565,8 @@ pub async fn portfolio_summary(State(s): State<AppState>, user: AuthUser) -> Api
             .fetch_one(&s.pool)
             .await?;
     let last_claim = sqlx::query_as::<_, LastClaim>(
-        "SELECT address, hotkey, block, ts, amount FROM claims WHERE address = ANY($1) ORDER BY ts DESC LIMIT 1",
+        "SELECT c.address, c.hotkey, v.label, c.block, c.ts, c.amount FROM claims c LEFT JOIN validators v ON v.hotkey = c.hotkey
+         WHERE c.address = ANY($1) ORDER BY c.ts DESC LIMIT 1",
     )
     .bind(&addrs)
     .fetch_optional(&s.pool)
@@ -644,6 +654,7 @@ pub struct EventRow {
     address: String,
     kind: String,
     hotkey: Option<String>,
+    label: Option<String>,
     netuid: Option<i32>,
     amount: Option<Decimal>,
     source: String,
@@ -660,10 +671,11 @@ pub async fn events(State(s): State<AppState>, user: AuthUser, Query(q): Query<E
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let rows = sqlx::query_as::<_, EventRow>(
-        "SELECT block, idx, ts, address, kind, hotkey, netuid, amount, source FROM events
-         WHERE address = ANY($1) AND ($2::text[] IS NULL OR kind = ANY($2)) AND kind <> 'root_claim_total'
-           AND ($3::bigint IS NULL OR block < $3)
-         ORDER BY block DESC, idx DESC LIMIT $4",
+        "SELECT e.block, e.idx, e.ts, e.address, e.kind, e.hotkey, v.label, e.netuid, e.amount, e.source
+         FROM events e LEFT JOIN validators v ON v.hotkey = e.hotkey
+         WHERE e.address = ANY($1) AND ($2::text[] IS NULL OR e.kind = ANY($2)) AND e.kind <> 'root_claim_total'
+           AND ($3::bigint IS NULL OR e.block < $3)
+         ORDER BY e.block DESC, e.idx DESC LIMIT $4",
     )
     .bind(&addrs)
     .bind(kinds.map(|k| k.into_iter().map(String::from).collect::<Vec<_>>()))
@@ -674,17 +686,18 @@ pub async fn events(State(s): State<AppState>, user: AuthUser, Query(q): Query<E
     if q.format.as_deref() == Some("csv") {
         return Ok(csv_response(
             "activity",
-            "block,idx,ts,address,kind,hotkey,netuid,amount,source",
+            "block,idx,ts,address,kind,hotkey,validator,netuid,amount,source",
             rows.iter()
                 .map(|e| {
                     format!(
-                        "{},{},{},{},{},{},{},{},{}",
+                        "{},{},{},{},{},{},{},{},{},{}",
                         e.block,
                         e.idx,
                         e.ts.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
                         e.address,
                         e.kind,
                         e.hotkey.clone().unwrap_or_default(),
+                        csv_field(e.label.as_deref().unwrap_or_default()),
                         e.netuid.map(|n| n.to_string()).unwrap_or_default(),
                         opt(e.amount),
                         e.source

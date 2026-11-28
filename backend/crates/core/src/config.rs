@@ -33,7 +33,7 @@ impl Config {
         let _ = dotenvy::dotenv();
         Ok(Self {
             database_url: var("DATABASE_URL", None)?,
-            subtensor_ws: var("SUBTENSOR_WS", Some("wss://entrypoint-finney.opentensor.ai:443"))?,
+            subtensor_ws: var("SUBTENSOR_WS", Some("ws://lite-finney.opentensor.xyz:9944"))?,
             subtensor_archive_ws: var("SUBTENSOR_ARCHIVE_WS", Some("wss://archive.chain.opentensor.ai:443"))?,
             bind_addr: var("BIND_ADDR", Some("0.0.0.0:8080"))?,
             rp_id: var("RP_ID", Some("localhost"))?,

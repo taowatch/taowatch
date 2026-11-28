@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getJson, postJson } from '../lib/api';
-import { bar, block, fmt, num, RANGES, short, signed, tao, utc, type Range } from '../lib/format';
+import { bar, block, fmt, num, RANGES, short, vname, signed, tao, utc, type Range } from '../lib/format';
 import type { ClaimRow, DayPoint, WalletDetail as Detail } from '../lib/types';
 import { ChangeChart } from '../components/charts';
 import { DayTable } from './Dashboard';
@@ -157,7 +157,7 @@ export function WalletDetail() {
                     const share = ((num(p.value_tao) ?? 0) / stakeSum) * 100;
                     return (
                       <tr key={`${p.hotkey}-${p.netuid}`}>
-                        <td>{p.label ?? short(p.hotkey)}</td>
+                        <td>{vname(p.hotkey, p.label)}</td>
                         <td className="r hide-m">SN{p.netuid}{p.netuid === 0 ? ' root' : ''}</td>
                         <td className="r stake">{tao(p.value_tao)}</td>
                         <td className="hide-m"><span aria-hidden="true" className="stake bars">{bar(share)}</span> {share.toFixed(1)}%</td>
@@ -178,7 +178,7 @@ export function WalletDetail() {
                   <li key={`${c.hotkey}-${c.ts}`}>
                     <span>{utc(c.ts)}</span>
                     <span className="up">+{fmt(c.amount, 4)} τ</span>
-                    <span className="dim small full">{short(c.hotkey)} · {c.block ? block(c.block) : 'between snapshots'}</span>
+                    <span className="dim small full">{vname(c.hotkey, c.label)} · {c.block ? block(c.block) : 'between snapshots'}</span>
                   </li>
                 ))}
               </ol>

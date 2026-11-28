@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { getJson } from '../lib/api';
-import { ago, block, fmt, num, RANGES, short, signed, tao, utc, type Range } from '../lib/format';
+import { ago, block, fmt, num, RANGES, short, vname, signed, tao, utc, type Range } from '../lib/format';
 import type { ClaimableResponse, ClaimRow, DayPoint, Summary, WalletRow } from '../lib/types';
 import { claimRate } from '../lib/estimate';
 import { BalanceChart } from '../components/charts';
@@ -90,7 +90,7 @@ export function Dashboard() {
           <Kpi
             label="CLAIMED ALL-TIME"
             value={tao(s.claimed_total, 3)}
-            sub={s.last_claim ? <>last {utc(s.last_claim.ts)} · {block(s.last_claim.block)} · {ago(s.last_claim.ts)}</> : 'no claims found yet'}
+            sub={s.last_claim ? <>last {utc(s.last_claim.ts)} · {vname(s.last_claim.hotkey, s.last_claim.label)} · {ago(s.last_claim.ts)}</> : 'no claims found yet'}
           />
         </section>
 
@@ -173,7 +173,7 @@ export function Dashboard() {
               <ol className="list">
                 {(claims.data ?? []).slice(0, 6).map((c) => (
                   <li key={`${c.address}-${c.hotkey}-${c.ts}`}>
-                    <span><span className="claimable">CLAIM</span> {labelOf(c.address)} · {short(c.hotkey)}</span>
+                    <span><span className="claimable">CLAIM</span> {labelOf(c.address)} · {vname(c.hotkey, c.label)}</span>
                     <span className="up">+{fmt(c.amount, 4)} τ</span>
                     <span className="dim small full">{utc(c.ts)} · {c.block ? block(c.block) : 'between snapshots'}</span>
                   </li>

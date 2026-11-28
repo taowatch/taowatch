@@ -5,10 +5,12 @@
 //! indexer track <ss58> [rec|short|none]         start tracking a wallet and queue its history
 //! indexer snapshot <ss58> [--archive] [--at N]  read one wallet and print it (no database)
 //! indexer events <block> <ss58> [--archive]     print the wallet's events in one block (no database)
+//! indexer name <hotkey>...                      print each validator hotkey's on-chain name (no database)
 //! ```
 
 mod backfill;
 mod live;
+mod names;
 mod price;
 mod schedule;
 mod store;
@@ -33,7 +35,7 @@ async fn main() -> Result<()> {
     let rpc_url = || {
         let _ = dotenvy_load();
         let var = if flag("--archive") { "SUBTENSOR_ARCHIVE_WS" } else { "SUBTENSOR_WS" };
-        let default = if flag("--archive") { "wss://archive.chain.opentensor.ai:443" } else { "wss://entrypoint-finney.opentensor.ai:443" };
+        let default = if flag("--archive") { "wss://archive.chain.opentensor.ai:443" } else { "ws://lite-finney.opentensor.xyz:9944" };
         // SUBTENSOR_ARCHIVE_WS may list fallbacks: the CLI uses the first one.
         let v = std::env::var(var).unwrap_or_else(|_| default.into());
         v.split(',').map(str::trim).find(|u| !u.is_empty()).unwrap_or(default).to_owned()
@@ -47,6 +49,7 @@ async fn main() -> Result<()> {
             tokio::try_join!(
                 live::run(pool.clone(), cfg.subtensor_ws.clone()),
                 backfill::run(pool.clone(), cfg.subtensor_archive_ws.clone(), cfg.backfill_workers),
+                names::run(pool.clone(), cfg.subtensor_ws.clone()),
                 price::run(pool),
             )?;
             Ok(())
@@ -99,9 +102,18 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("name") => {
+            let chain = Chain::connect(&rpc_url()).await?;
+            anyhow::ensure!(args.len() > 1, "usage: indexer name <hotkey>...");
+            for hk in &args[1..] {
+                let key = chain::parse_address(hk)?;
+                println!("{key}  {}", chain.validator_name(&key).await?.as_deref().unwrap_or("-"));
+            }
+            Ok(())
+        }
         _ => {
             eprintln!(
-                "usage: indexer <run | track <ss58> [plan] | snapshot <ss58> [--archive] [--at N] | events <block> <ss58> [--archive]>"
+                "usage: indexer <run | track <ss58> [plan] | snapshot <ss58> [--archive] [--at N] | events <block> <ss58> [--archive] | name <hotkey>...>"
             );
             std::process::exit(2);
         }

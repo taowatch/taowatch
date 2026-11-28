@@ -65,10 +65,10 @@ export type Summary = {
   claimed_total: Dec;
   change_24h: Dec | null;
   claimable_change_24h: Dec | null;
-  last_claim: { address: string; hotkey: string; block: number | null; ts: string; amount: Dec } | null;
+  last_claim: { address: string; hotkey: string; label: string | null; block: number | null; ts: string; amount: Dec } | null;
 };
 
-export type ClaimRow = { address: string; hotkey: string; block: number | null; ts: string; amount: Dec; exact: boolean };
+export type ClaimRow = { address: string; hotkey: string; label: string | null; block: number | null; ts: string; amount: Dec; exact: boolean };
 
 export type ClaimableResponse = {
   days: DayPoint[];
@@ -82,6 +82,7 @@ export type EventRow = {
   address: string;
   kind: string;
   hotkey: string | null;
+  label: string | null;
   netuid: number | null;
   amount: Dec | null;
   source: 'event' | 'snapshot_diff';

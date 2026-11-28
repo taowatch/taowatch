@@ -24,6 +24,9 @@ export const pct = (v: number | null) => (v === null || !Number.isFinite(v) ? '�
 
 export const short = (a: string) => (a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a);
 
+/** Validator's on-chain name, or its short hotkey when it has none. */
+export const vname = (hotkey: string, label?: string | null) => label || short(hotkey);
+
 export const block = (b: number | null | undefined) => (b === null || b === undefined ? '—' : `#${b.toLocaleString('en-US')}`);
 
 /** "2026-11-18 11:34 UTC" */

@@ -202,7 +202,8 @@ pub struct Chain {
 
 impl Chain {
     pub async fn connect(url: &str) -> Result<Self> {
-        let rpc = subxt_rpcs::RpcClient::from_url(url).await.with_context(|| format!("connect {url}"))?;
+        // ws:// is allowed: a public read-only node (e.g. lite-finney on :9944) may not serve TLS.
+        let rpc = subxt_rpcs::RpcClient::from_insecure_url(url).await.with_context(|| format!("connect {url}"))?;
         let backend = LegacyBackend::<SubstrateConfig>::builder().build(rpc);
         let api = OnlineClient::<SubstrateConfig>::from_backend(Arc::new(backend)).await?;
         Ok(Self { api })
@@ -374,6 +375,28 @@ where
 }
 
 /// Live and historical snapshots share this one code path.
+#[derive(Debug, scale_decode::DecodeAsType)]
+struct RawIdentity {
+    name: Vec<u8>,
+}
+
+impl Chain {
+    /// On-chain name of a validator hotkey: `IdentitiesV2(Owner(hotkey)).name`, trimmed.
+    /// `None` when the owner has set no identity (or an empty name).
+    pub async fn validator_name(&self, hotkey: &AccountId32) -> Result<Option<String>> {
+        let at = self.api.at_current_block().await?;
+        let owner: Acc = match at.storage().try_fetch(dynamic::storage::<(Acc,), Acc>("SubtensorModule", "Owner"), (hotkey.0,)).await? {
+            Some(v) => v.decode()?,
+            None => return Ok(None),
+        };
+        let id = at.storage().try_fetch(dynamic::storage::<(Acc,), RawIdentity>("SubtensorModule", "IdentitiesV2"), (owner,)).await?;
+        Ok(match id {
+            Some(v) => Some(String::from_utf8_lossy(&v.decode()?.name).trim().to_owned()).filter(|n| !n.is_empty()),
+            None => None,
+        })
+    }
+}
+
 async fn snapshot_inner(
     at: &subxt::client::OnlineClientAtBlock<SubstrateConfig>,
     block: u32,
