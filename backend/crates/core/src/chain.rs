@@ -406,7 +406,9 @@ fn collapse(events: &mut Vec<WalletEvent>) {
     let mut drop = vec![false; events.len()];
     for (i, e) in events.iter().enumerate() {
         match &e.kind {
-            EventKind::TransferIn { from: other, .. } | EventKind::TransferOut { to: other, .. } if other.0.starts_with(STAKE_POOL_PREFIX) => {
+            EventKind::TransferIn { from: other, .. } | EventKind::TransferOut { to: other, .. }
+                if other.0.starts_with(STAKE_POOL_PREFIX) =>
+            {
                 drop[i] = true;
             }
             _ => {}
@@ -415,10 +417,9 @@ fn collapse(events: &mut Vec<WalletEvent>) {
     for i in 0..events.len() {
         // (coldkey, hotkey, netuid) of the removed and of the added part.
         let (removed, added) = match &events[i].kind {
-            EventKind::StakeMoved { from_hotkey, from_netuid, to_hotkey, to_netuid, .. } => (
-                Some((&events[i].coldkey, from_hotkey, *from_netuid)),
-                Some((&events[i].coldkey, to_hotkey, *to_netuid)),
-            ),
+            EventKind::StakeMoved { from_hotkey, from_netuid, to_hotkey, to_netuid, .. } => {
+                (Some((&events[i].coldkey, from_hotkey, *from_netuid)), Some((&events[i].coldkey, to_hotkey, *to_netuid)))
+            }
             EventKind::StakeTransferredOut { hotkey, netuid, .. } => (Some((&events[i].coldkey, hotkey, *netuid)), None),
             EventKind::StakeTransferredIn { hotkey, netuid, .. } => (None, Some((&events[i].coldkey, hotkey, *netuid))),
             _ => continue,
